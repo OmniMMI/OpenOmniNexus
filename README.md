@@ -1,29 +1,18 @@
 <h1 align="center">Multi-modal Multiplexing Modeling</h1>
-<p align="center">
+<!-- <p align="center">
     <a href="https://arxiv.org/abs/xxxx.xxxxx">
             <img alt="Build" src="http://img.shields.io/badge/cs.CV-arXiv%3Axxxx.xxxxx-B31B1B.svg">
-    </a>
-    <a href="https://omnimmi.github.io/m4">
-        <img alt="Build" src="https://img.shields.io/badge/M4-page-blue">
-    </a>
-    <a href="https://cvpr.thecvf.com/Conferences/2025">
-            <img alt="Build" src="http://img.shields.io/badge/CVPR-2025-4b44ce.svg">
     </a>
     <br>
     <a href="https://huggingface.co/ColorfulAI/M4-LongVA-7B-Qwen2">
         <img alt="Build" src="https://img.shields.io/badge/🤗 Model-M4--7B-yellow">
     </a>
-    <a href="https://huggingface.co/ColorfulAI/M4-Audio-LongVA-7B-Qwen2">
-        <img alt="Build" src="https://img.shields.io/badge/🤗 Model-M4--Audio--7B-yellow">
-    </a>
-    <a href="https://huggingface.co/datasets/ColorfulAI/M4-IT">
-        <img alt="Build" src="https://img.shields.io/badge/🤗 Dataset-M4--IT-yellow">
-    </a>
-</p>
+
+</p> -->
 
 <!-- [![Conference](http://img.shields.io/badge/CVPR-2025-4b44ce.svg)](https://cvpr.thecvf.com/Conferences/2025) -->
 
-![image](assets/framework.png)
+<!-- ![image](assets/framework.png) -->
 
 ## Updates
 
@@ -125,7 +114,7 @@ This codebase is tested on CUDA 11.8 and A800-80G.
 ```bash
 conda create -n open_gpt4o python=3.10 -y && conda activate open_gpt4o
 pip install torch==2.5.0 torchvision==0.20.0 torchaudio==2.5.0 --index-url https://download.pytorch.org/whl/cu118
-pip install -e "src/.[train]"
+pip install -e ".[train]"
 pip install packaging &&  pip install ninja && pip install flash-attn==2.6.3 --no-build-isolation --no-cache-dir
 pip install -r requirements.txt
 ```
