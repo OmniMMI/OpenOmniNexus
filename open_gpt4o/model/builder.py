@@ -51,7 +51,7 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
     else:
         is_multimodal = False
 
-    if "llava" in model_name.lower()  or "longva" in model_name.lower() or is_multimodal:
+    if "llava" in model_name.lower() or "longva" in model_name.lower() or "opengpt4o" in model_name.lower() or is_multimodal:
         # Load LLaVA model
         if "lora" in model_name.lower() and model_base is None:
             warnings.warn(
@@ -206,17 +206,31 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
                 model = LlavaLlamaForCausalLM.from_pretrained(model_path, low_cpu_mem_usage=True, attn_implementation=attn_implementation, config=llava_cfg, **kwargs)
 
             elif "qwen" in model_name.lower() or "quyen" in model_name.lower():
-                from open_gpt4o.model.language_model.llava_qwen import LlavaQwenConfig
-
-                tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=False)
-                if overwrite_config is not None:
-                    llava_cfg = LlavaQwenConfig.from_pretrained(model_path)
-                    rank0_print(f"Overwriting config with {overwrite_config}")
-                    for k, v in overwrite_config.items():
-                        setattr(llava_cfg, k, v)
-                    model = LlavaQwenForCausalLM.from_pretrained(model_path, low_cpu_mem_usage=True, attn_implementation=attn_implementation, config=llava_cfg, **kwargs)
+                
+                if 's2s' in model_name.lower():
+                    from open_gpt4o.model.language_model.llava_s2s_qwen import LlavaS2SQwenConfig
+                    tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=False)
+                    if overwrite_config is not None:
+                        llava_s2s_cfg = LlavaS2SQwenConfig.from_pretrained(model_path)
+                        rank0_print(f"Overwriting config with {overwrite_config}")
+                        for k, v in overwrite_config.items():
+                            setattr(llava_s2s_cfg, k, v)
+                        model = LlavaS2SQwenForCausalLM.from_pretrained(model_path, low_cpu_mem_usage=True, attn_implementation=attn_implementation, config=llava_s2s_cfg, **kwargs)
+                    else:
+                        model = LlavaS2SQwenForCausalLM.from_pretrained(model_path, low_cpu_mem_usage=True, attn_implementation=attn_implementation, **kwargs)
                 else:
-                    model = LlavaQwenForCausalLM.from_pretrained(model_path, low_cpu_mem_usage=True, attn_implementation=attn_implementation, **kwargs)
+                
+                    from open_gpt4o.model.language_model.llava_qwen import LlavaQwenConfig
+
+                    tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=False)
+                    if overwrite_config is not None:
+                        llava_cfg = LlavaQwenConfig.from_pretrained(model_path)
+                        rank0_print(f"Overwriting config with {overwrite_config}")
+                        for k, v in overwrite_config.items():
+                            setattr(llava_cfg, k, v)
+                        model = LlavaQwenForCausalLM.from_pretrained(model_path, low_cpu_mem_usage=True, attn_implementation=attn_implementation, config=llava_cfg, **kwargs)
+                    else:
+                        model = LlavaQwenForCausalLM.from_pretrained(model_path, low_cpu_mem_usage=True, attn_implementation=attn_implementation, **kwargs)
 
             elif "gemma" in model_name.lower():
                 tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=False)
@@ -263,7 +277,7 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
     rank0_print(f"Model Class: {model.__class__.__name__}")
     image_processor = None
 
-    if "llava" in model_name.lower() or "longva" in model_name.lower() or is_multimodal:
+    if "llava" in model_name.lower() or "longva" in model_name.lower() or "opengpt4o" in model_name.lower() or is_multimodal:
         mm_use_im_start_end = getattr(model.config, "mm_use_im_start_end", False)
         mm_use_im_patch_token = getattr(model.config, "mm_use_im_patch_token", True)
         if mm_use_im_patch_token:

@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=m4-audio
+#SBATCH --job-name=opengpt4o
 #SBATCH --partition=HGX,DGX
 #SBATCH --account=research
 #SBATCH --qos=lv0b
@@ -7,15 +7,15 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=4
 #SBATCH --gres=gpu:4
-#SBATCH --output=./slurm_logs/finetune-m4-audio.out
-#SBATCH --error=./slurm_logs/finetune-m4-audio.error.out
+#SBATCH --output=./slurm_logs/finetune-opengpt4o.out
+#SBATCH --error=./slurm_logs/finetune-opengpt4o.error.out
 
 
 export OMP_NUM_THREADS=4
 export NCCL_IB_DISABLE=0
 export NCCL_IB_GID_INDEX=3
 # export NCCL_SOCKET_IFNAME=eth0
-export NCCL_DEBUG=INFO
+# export NCCL_DEBUG=INFO
 
 
 export NUM_GPUS=4
@@ -26,19 +26,20 @@ export PORT=$MASTER_PORT
 export PYTHONPATH=$(pwd)
 echo $PYTHONPATH
 
-LLM_VERSION="checkpoints/LongVA-7B-Qwen2-VoiceAssistant/checkpoint-3000"
+LLM_VERSION="checkpoints/Qwen2-7B-Instruct"
 LLM_VERSION_CLEAN="${LLM_VERSION//\//_}"
 VISION_MODEL_VERSION="checkpoints/clip-vit-large-patch14-336"
 VISION_MODEL_VERSION_CLEAN="${VISION_MODEL_VERSION//\//_}"
 SPEECH_MODEL_VERSION="checkpoints/whisper/large-v3.pt"
 # SPEECH_MODEL_VERSION="checkpoints/whisper/whisper-large-v3"
 SPEECH_MODEL_VERSION_CLEAN="whisper-large"
+SPEECH_GENERATOR_VERSION="CTC"
 
 PROMPT_VERSION=qwen_1_5
 
 BASE_RUN_NAME="llavanext-${VISION_MODEL_VERSION_CLEAN}-${LLM_VERSION_CLEAN}-mlp2x_gelu-pretrain_blip558k_plain"
 echo "BASE_RUN_NAME: ${BASE_RUN_NAME}"
-MID_RUN_NAME="M4-Audio-LongVA-7B-Qwen2"
+MID_RUN_NAME="OpenGPT4o-7B-Qwen2"
 echo "MID_RUN_NAME: ${MID_RUN_NAME}"
 
 CKPT_PATH=$LLM_VERSION # this could also be the previous stage checkpoint
@@ -48,16 +49,17 @@ module add cuda11.8
 
 ACCELERATE_CPU_AFFINITY=1 torchrun --nproc_per_node="${NUM_GPUS}" --master_port="${PORT}" \
     open_gpt4o/train/train_mem.py \
-    --deepspeed scripts/zero1.json \
+    --deepspeed scripts/zero2.json \
     --model_name_or_path ${CKPT_PATH} \
     --version ${PROMPT_VERSION} \
-    --data_path inputs/texts/m4-it-qwen-audio.json \
+    --data_path inputs/text/llava_next_audio_units.json \
     --image_folder inputs/images/llava-next \
-    --speech_folder inputs/speech/interinst \
-    --mm_tunable_parts "speech_projector,mm_mlp_adapter,mm_language_model" \
+    --speech_folder inputs/speech/voiceassistant \
+    --mm_tunable_parts "speech_projector,mm_mlp_adapter,mm_language_model,speech_generator" \
     --mm_vision_tower_lr=2e-6 \
     --vision_tower ${VISION_MODEL_VERSION} \
     --speech_encoder ${SPEECH_MODEL_VERSION} \
+    --speech_generator ${SPEECH_GENERATOR_VERSION} \
     --mm_projector_type mlp2x_gelu \
     --mm_vision_select_layer -2 \
     --speech_projector_type linear \
@@ -69,15 +71,15 @@ ACCELERATE_CPU_AFFINITY=1 torchrun --nproc_per_node="${NUM_GPUS}" --master_port=
     --bf16 True \
     --run_name $MID_RUN_NAME \
     --output_dir "checkpoints/${MID_RUN_NAME}" \
-    --num_train_epochs 1 \
-    --per_device_train_batch_size 1 \
+    --num_train_epochs 3 \
+    --per_device_train_batch_size 8 \
     --per_device_eval_batch_size 4 \
-    --gradient_accumulation_steps 8 \
+    --gradient_accumulation_steps 4 \
     --evaluation_strategy "no" \
     --save_strategy "steps" \
     --save_steps 500 \
     --save_total_limit 1 \
-    --learning_rate 1e-5 \
+    --learning_rate 2e-5 \
     --weight_decay 0. \
     --warmup_ratio 0.03 \
     --lr_scheduler_type "cosine" \

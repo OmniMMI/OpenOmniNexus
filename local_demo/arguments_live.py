@@ -30,7 +30,7 @@ class LiveTrainingArguments(TrainingArguments):
     output_dir: str = 'outputs/debug'
     
     # OpenGPT4o parameters
-    model_path: str = "ColorfulAI/M4"
+    model_path: str = "ColorfulAI/OpenGPT4o"
     model_base: str = None
     video_file: str = None
     # device: str = "cuda"

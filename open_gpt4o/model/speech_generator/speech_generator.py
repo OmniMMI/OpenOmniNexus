@@ -68,6 +68,7 @@ class SpeechGeneratorCTC(nn.Module):
         tgt_label_reps = []
         for tgt_rep, label in zip(tgt_reps, labels):
             tgt_label_reps.append(tgt_rep[label != IGNORE_INDEX])
+        
         hidden_states, attention_mask, position_ids = self.upsample(tgt_label_reps, tgt_units)
         hidden_states = self.input_proj(hidden_states)
         for layer in self.layers:
@@ -83,6 +84,8 @@ class SpeechGeneratorCTC(nn.Module):
         ctc_tgt_lens = tgt_units.ne(IGNORE_INDEX).long().sum(dim=-1)
         ctc_tgt_mask = ~lengths_to_padding_mask(ctc_tgt_lens)
         ctc_tgt_flat = tgt_units.masked_select(ctc_tgt_mask)
+        
+        
         ctc_loss = F.ctc_loss(
             ctc_lprobs.transpose(0, 1),
             ctc_tgt_flat,
@@ -92,6 +95,7 @@ class SpeechGeneratorCTC(nn.Module):
             zero_infinity=True,
             blank=self.unit_vocab_size
         )
+        
         ctc_loss /= ctc_tgt_lens.sum().item()
         return ctc_loss
     

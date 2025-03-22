@@ -1,109 +1,45 @@
-<h1 align="center">Multi-modal Multiplexing Modeling</h1>
-<!-- <p align="center">
-    <a href="https://arxiv.org/abs/xxxx.xxxxx">
+<h1 align="center">Open GPT-4o</h1>
+<p align="center">
+    <!-- <a href="https://arxiv.org/abs/xxxx.xxxxx">
             <img alt="Build" src="http://img.shields.io/badge/cs.CV-arXiv%3Axxxx.xxxxx-B31B1B.svg">
     </a>
-    <br>
-    <a href="https://huggingface.co/ColorfulAI/M4-LongVA-7B-Qwen2">
-        <img alt="Build" src="https://img.shields.io/badge/🤗 Model-M4--7B-yellow">
+    <br> -->
+    <a href="https://huggingface.co/ColorfulAI/OpenGPT4o-7B-Qwen2">
+        <img alt="Build" src="https://img.shields.io/badge/🤗 Model-OpenGPT4o--7B--Qwen2-yellow">
     </a>
 
-</p> -->
+</p>
 
-<!-- [![Conference](http://img.shields.io/badge/CVPR-2025-4b44ce.svg)](https://cvpr.thecvf.com/Conferences/2025) -->
 
 <!-- ![image](assets/framework.png) -->
 
+<!-- > [!IMPORTANT]
+>  -->
+
 ## Updates
 
-<!-- - [] Paper Release, check it on [Arxiv](https://arxiv.org/pdf/xxxx.xxxxx.pdf).  -->
 
-- `2025` **Evaluate on [OmniMMI](https://github.com/bigai-nlco/OmniMMI)**. A comprehensive multi-modal interaction benchmark in streaming video context.
-- `2025` **First Release [M4](https://github.com/patrick-tssn/M4)**. M4 enables multiplexed modeling capabilities for a visual language model at minimal cost.
+- `2025` **First Release [Open-GPT-4o](https://github.com/patrick-tssn/Open-GPT-4o)**. a fully open-source implementation of a GPT-4o-like speech-to-speech video understanding model.
 
 **Table of Contents**
 
-- [M4](#m4)
-  - [Introduction](#introduction)
-  - [M4-IT](#m4-it-dataset)
-- [Train](#training)
+
+- [Introduction](#introduction)
+- [Training](#training)
   - [Installation](#installation)
   - [Data Preparation](#data-preparation)
   - [Backbone Preparation](#pretrained-backbone-preparation)
   - [Start Training](#start-training)
 - [Usage](#usage)
-- [Evaluation](#evaluation)
 - [Roadmap](#roadmap)
 - [Acknowledgement](#acknowledgement)
 - [Citation](#citation)
 
-## M4
 
-### Introduction
 
-We introduce Multimodal Multiplexing Modeling (M4), a framework that enhances real-time interactive reasoning with minimal fine-tuning on pre-trained MLLMs.
+## Introduction
 
-- **M4-IT Dataset**: A synthetic instruction finetuning dataset with components interleaved image-text instruction, noise instruction, and stop instruction.
-- **M4 Model**: Enhances proactive response generation, assesses new queries against noise, by enabling parallel decoding.
 
-### M4-IT Dataset
-
-Building on the [LLaVA-NeXT-Data](https://huggingface.co/datasets/lmms-lab/LLaVA-NeXT-Data), we crafted a small video-free synthetic instruction finetuning dataset, M4-IT, with the assistance of GPT-4o. M4-IT comprises four components:
-
-- the original instruction, which is a data replay from the instruction data of our base model
-- interleaved image-text instruction, which is created by reordering the question and image components of the original instruction
-- noise instruction, where GPT-4 is prompted to automatically generate statements that do not require a response
-- stop instruction, where GPT-4 is prompted to generate stop phrases for the stop instruction
-
-In addition, to assist with audio instruction tuning, we convert user queries into audio using [CosyVoice](https://github.com/FunAudioLLM/CosyVoice), with a randomly selected [VoiceAssistant](https://huggingface.co/datasets/gpt-omni/VoiceAssistant-400K) as a prompt.
-
-**Data Statistics**
-
-The M4-IT dataset comprises a total of 9,963 instructions. The distribution across different categories is as follows:
-
-| Category   | Count |
-| ---------- | ----- |
-| Original   | 2,624 |
-| Interleave | 2,376 |
-| Noise      | 2,563 |
-| Stop       | 2,500 |
-
-Data sample
-
-```json
-    {
-        "id": "000000240632",
-        "image": "000000240632.jpg",
-        "conversations": [
-            {
-                "from": "human",
-                "value": "<image>\n"
-            },
-            {
-                "from": "human",
-                "value": "<speech>\n" # provide the bounding box coordinates of the region that the given sentence describes
-            },
-            {
-                "from": "gpt",
-                "value": "[0.280,0.194,0.628,0.824]"
-            },
-            {
-                "from": "human",
-                "value": "<speech>\n" # Could I stop you for a second?
-            },
-            {
-                "from": "gpt",
-                "value": "<|im_end|>"
-            }
-        ],
-        "speech": [
-            "000000240632_0.wav",
-            "000000240632_1.wav"
-        ]
-    },
-```
-
-If you are interested in the process of the construction of audio instruction, you can refer to the scripts in `preprocess/tts`
 
 ## Training
 
@@ -119,14 +55,54 @@ pip install packaging &&  pip install ninja && pip install flash-attn==2.6.3 --n
 pip install -r requirements.txt
 ```
 
-*optional*
+Additionally, Install [fairseq](https://github.com/facebookresearch/fairseq) for speech units process
 
-- [ChatTTS](https://github.com/2noise/ChatTTS)
-- [CosyVoice](https://github.com/FunAudioLLM/CosyVoice)
+
 
 ### Data Preparation
 
-Download [M4-IT](https://huggingface.co/datasets/ColorfulAI/M4-IT) and organize it in the following format. To enhance audio instruction-following performance, you may also download [VoiceAssistant-400K](https://huggingface.co/datasets/gpt-omni/VoiceAssistant-400K) and sample a portion of this dataset based on your computational resources.
+Data download:
+- Download [LLaVA-NeXT-Data](https://huggingface.co/datasets/lmms-lab/LLaVA-NeXT-Data) for visual instruction tuning 
+- Download [VoiceAssistant-400K](https://huggingface.co/datasets/gpt-omni/VoiceAssistant-400K) for speech instruction tuning. 
+You can sample a portion of these datasets based on your computational resources. 
+
+Data preprocess:
+- Install [CosyVoice](https://github.com/FunAudioLLM/CosyVoice) or [ChatTTS](https://github.com/2noise/ChatTTS), for speech synthesis and test speech generation. If you are interested in the process of the speech instruction synthesis, you can refer to the scripts in `preprocess/tts`
+- Download [mHuBERT](https://dl.fbaipublicfiles.com/hubert/mhubert_base_vp_en_es_fr_it3.pt) and [K-means Model](https://dl.fbaipublicfiles.com/hubert/mhubert_base_vp_en_es_fr_it3_L11_km1000.bin) to `checkpoints/quantizer` for speech units generation. You can refer to the scripts in `preprocess/quantize` for the speech unit generation process.
+
+
+*optional:* In addition, to assist with visual-audio instruction tuning, we convert user queries from [LLaVA-NeXT](https://github.com/LLaVA-VL/LLaVA-NeXT) into audio using [CosyVoice](https://github.com/FunAudioLLM/CosyVoice), you can download it from [LLaVA-NeXT-Audio](https://huggingface.co/datasets/ColorfulAI/LLaVA-NeXT-Audio).
+
+Data sample
+
+```json
+    {
+        "id": "000000240632",
+        "image": "000000240632.jpg",
+        "conversations": [
+            {
+                "from": "human",
+                "value": "<image>\n"
+            },
+            {
+                "from": "human",
+                "value": "<speech>\n"
+            },
+            {
+                "from": "gpt",
+                "value": "Hi, I am Open-GPT-4o, the video show ...",
+                "tgt_units": [497, 300, 63, ...]
+
+            },
+        ],
+        "speech": [
+            "000000240632_0.wav",
+            "000000240632_1.wav"
+        ]
+    },
+```
+
+The final data is organized in the following format:
 
 ```
 open_gpt4o/inputs    
@@ -142,48 +118,58 @@ open_gpt4o/inputs
         ├── ...
         └── xxxx.wav
     └── texts/
+      ├── llava_next_audio.json
+      ├── llava_next_audio_units.json
       ├── voiceassistant.json
-      ├── m4-it-qwen.json
-      └── m4-it-qwen-audio.json
+      └── voiceassistant_units.json
 ```
+
+
+
 
 ### Pretrained Backbone Preparation
 
-Download the pretrained large video language model weights [LongVA-7B](https://huggingface.co/lmms-lab/LongVA-7B) and the pretrained audio encoder weights [Whisper](https://github.com/openai/whisper), and place them in the `open_gpt4o/checkpoints` directory.
+Download the pretrained large video language model weights [LongVA-7B](https://huggingface.co/lmms-lab/LongVA-7B), the pretrained audio encoder weights [Whisper](https://github.com/openai/whisper), and the [HiFi-GAN vocoder](https://dl.fbaipublicfiles.com/fairseq/speech_to_speech/vocoder/code_hifigan/mhubert_vp_en_es_fr_it3_400k_layer11_km1000_lj/g_00500000) with [config](https://dl.fbaipublicfiles.com/fairseq/speech_to_speech/vocoder/code_hifigan/mhubert_vp_en_es_fr_it3_400k_layer11_km1000_lj/config.json), and place them in the `open_gpt4o/checkpoints` directory.
 
 ```
 open_gpt4o/checkpoints    
-    ├── LongVA-7B-Qwen2
-    └── whisper/large-v3.pt
+    ├── Qwen2-7B-Instruct
+    ├── whisper/large-v3.pt
+    └── vocoder
+        ├── config.json
+        └── g_00500000
 ```
 
-If you wish to use other LLMs or instruction tuning data, feel free to follow the [LLaVA-NeXT](https://github.com/LLaVA-VL/LLaVA-NeXT) pipeline. Here, we provide a pipeline to do visual instruction tuning on [Llama-3.1-8B](https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct/tree/main) using the datasets [blip_laion_cc_sbu_558k](https://huggingface.co/datasets/liuhaotian/LLaVA-Pretrain), [LLaVA-NeXT-Data](https://huggingface.co/datasets/lmms-lab/LLaVA-NeXT-Data), and [ShareGPTVideo](https://huggingface.co/datasets/ShareGPTVideo/train_video_and_instruction). Feel free to adapt it to other models.
 
-```bash
-bash lvlm_pretrain.sh
-bash lvlm_finetune.sh
-bash lvlm_dpo.sh
-```
 
 ### Start Training
 
-Our training logic is essentially the same as the visual instruction tuning. (The training process takes ~2 hours on 4 NVIDIA A800-80G)
+Our training logic is takes three steps:
+
+**1. Visual instruction tuning**
+
+If you wish to use other LLMs or instruction tuning data, feel free to follow the [LLaVA-NeXT](https://github.com/LLaVA-VL/LLaVA-NeXT) pipeline. Here, we provide a pipeline to do visual instruction tuning on [Qwen2-7B-Instruct](https://huggingface.co/Qwen/Qwen2-7B-Instruct) or [Llama-3.1-8B](https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct/tree/main) using the datasets [blip_laion_cc_sbu_558k](https://huggingface.co/datasets/liuhaotian/LLaVA-Pretrain), [LLaVA-NeXT-Data](https://huggingface.co/datasets/lmms-lab/LLaVA-NeXT-Data), and [ShareGPTVideo](https://huggingface.co/datasets/ShareGPTVideo/train_video_and_instruction). Feel free to adapt it to other models.
 
 ```bash
 cd open_gpt4o
-# finetune on m4-it
-bash scripts/finetune_m4.sh
-# finetune on m4-it-audio
-bash scripts/finetune_m4_audio.sh
+bash scripts/lvlm_pretrain.sh
+bash scripts/lvlm_finetune.sh
+bash scripts/lvlm_dpo.sh
 ```
 
-Before fine-tuning the audio version, you are encouraged to tune the vision-language model on audio instructions to improve the generality of audio understanding. (This process takes ~100 hours on 4 A800 GPU)
+Alternatively, you can directly use an off-the-shelf LLaVA-like model such as [LongVA-7B](https://huggingface.co/lmms-lab/LongVA-7B).
+
+**2. Audio/Speech instruction tuning**
+
 
 ```bash
 bash scripts/finetune_voiceassistant.sh
 ```
 
 To assist those with limited computational resources, we also provide an off-the-shelf checkpoint. Check it out at [![Model](https://img.shields.io/badge/%F0%9F%A4%97Model-LongVA--7B--Qwen2--VoiceAssistant-yellow)](https://huggingface.co/ColorfulAI/LongVA-7B-Qwen2-VoiceAssistant)
+
+
+*We can combine step 1 and step 2 to perform visual-audio instruction tuning simultaneously:*
 
 To enhance the model's visual-audio understanding capabilities, we offer a script to fine-tune it using the [![Dataset](https://img.shields.io/badge/%F0%9F%A4%97Dataset-LLaVA--NeXT--Audio-yellow)](https://huggingface.co/datasets/ColorfulAI/LLaVA-NeXT-Audio) dataset. This aims to improve visual-audio alignment performance. (This process takes ~140 hours on 4 A800 GPU)
 
@@ -197,63 +183,131 @@ For those with limited computational resources, we also provide a ready-to-use c
 
 Try the visual-audio base model through `python -m local_demo.baseline_audio_cli --video_path local_demo/assets/water.mp4 --question_audio "local_demo/wav/water.mp4.wav"`
 
+
+**3. Speech generator tuning**
+
+For speech generation, we adopt the tuning strategy from [LLaMA-Omni](https://github.com/ictnlp/LLaMA-Omni), utilizing the connectionist temporal classification (CTC) loss to align the hidden states of the LLM with discrete speech units extracted by the HuBERT and K-means models.
+
+```bash
+bash scritps/finetune_opengpt4o.sh
+```
+
+*TRIAL: We can streamline these three steps into a single end-to-end process by creating visual-audio-speech data, then running `scripts/finetune_opengpt4o.sh`.*
+
 ## Usage
 
-Currently, we only provide a demo, but you are welcome to deploy it using your preferred framework.
+```python
+import os
+import json
+from PIL import Image
+import numpy as np
+import torchaudio
+import torch
+from decord import VideoReader, cpu
+import whisper
+import soundfile as sf
+# fix seed
+torch.manual_seed(0)
 
-(i) attention-based proactive reasoning
+from fairseq import utils as fairseq_utils
+from fairseq.models.text_to_speech.vocoder import CodeHiFiGANVocoder
 
-```bash
-cd open_gpt4o
-python -m local_demo.proactive_cli  --model_path M4-LongVA-Qwen-7B --frame_fps 1 --video_file local_demo/assets/water.mp4
+from open_gpt4o.model.builder import load_pretrained_model
+from open_gpt4o.mm_utils import tokenizer_image_speech_tokens, process_images, ctc_postprocess
+from open_gpt4o.constants import IMAGE_TOKEN_INDEX, SPEECH_TOKEN_INDEX
+
+import warnings
+warnings.filterwarnings("ignore")
+
+# config OpenGPT4o
+model_path = "checkpoints/OpenGPT4o-7B-Qwen2"
+video_path = "local_demo/assets/water.mp4"
+audio_path = "local_demo/wav/infer.wav"
+max_frames_num = 16 # you can change this to several thousands so long you GPU memory can handle it :)
+gen_kwargs = {"do_sample": True, "temperature": 0.5, "top_p": None, "num_beams": 1, "use_cache": True, "max_new_tokens": 1024}
+tokenizer, model, image_processor, _ = load_pretrained_model(model_path, None, "llava_s2s_qwen", device_map="cuda:0")
+
+# config vocoder
+with open("checkpoints/vocoder/config.json") as f:
+    vocoder_cfg = json.load(f)
+vocoder = CodeHiFiGANVocoder("checkpoints/vocoder/g_00500000", vocoder_cfg).cuda()
+
+# query input
+query = "Give a detailed caption of the video as if I am blind."
+query = None # comment this to use ChatTTS to convert the query to audio
+
+#video input
+prompt = "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n<image><|im_end|>\n<|im_start|>user\n<speech>\n<|im_end|>\n<|im_start|>assistant\n"
+input_ids = tokenizer_image_speech_tokens(prompt, tokenizer, IMAGE_TOKEN_INDEX, SPEECH_TOKEN_INDEX, return_tensors="pt").unsqueeze(0).to(model.device)
+vr = VideoReader(video_path, ctx=cpu(0))
+total_frame_num = len(vr)
+uniform_sampled_frames = np.linspace(0, total_frame_num - 1, max_frames_num, dtype=int)
+frame_idx = uniform_sampled_frames.tolist()
+frames = vr.get_batch(frame_idx).asnumpy()
+video_tensor = image_processor.preprocess(frames, return_tensors="pt")["pixel_values"].to(model.device, dtype=torch.float16)
+
+#audio input
+# process speech for input question
+if query is not None:
+    import ChatTTS
+    chat = ChatTTS.Chat()
+    chat.load(source='local', compile=True)
+    audio_path = "./local_demo/wav/" + "infer.wav"
+    if os.path.exists(audio_path): os.remove(audio_path) # refresh
+    if not os.path.exists(audio_path):
+        wav = chat.infer(query)
+        try:
+            torchaudio.save(audio_path, torch.from_numpy(wav).unsqueeze(0), 24000)
+        except:
+            torchaudio.save(audio_path, torch.from_numpy(wav), 24000)
+    print(f"Human: {query}")
+    
+else:
+    print("Human: <audio>")
+    
+speech = whisper.load_audio(audio_path)
+speech = whisper.pad_or_trim(speech)
+speech = whisper.log_mel_spectrogram(speech, n_mels=128).permute(1, 0).to(device=model.device, dtype=torch.float16)
+speech_length = torch.LongTensor([speech.shape[0]]).to(model.device)
+
+with torch.inference_mode():
+    output_ids, output_units = model.generate(input_ids, images=[video_tensor],  modalities=["video"], speeches=speech.unsqueeze(0), speech_lengths=speech_length, **gen_kwargs)
+outputs = tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
+print(f"Agent: {outputs}")
+
+output_units = ctc_postprocess(output_units, blank=model.config.unit_vocab_size)
+output_units = [(list(map(int, output_units.strip().split())))]
+print(f"Units: {output_units}")
+x = {"code": torch.LongTensor(output_units[0]).view(1,-1)}
+x = fairseq_utils.move_to_cuda(x)
+wav = vocoder(x, True)
+output_file_path = "local_demo/wav/output.wav"
+sf.write(
+    output_file_path,
+    wav.detach().cpu().numpy(),
+    16000
+)
+print(f"The generated wav saved to {output_file_path}")
 ```
 
-(ii) multiplexing modeling
 
-*text input*
-
-```bash
-cd open_gpt4o
-# new valid query
-python -m local_demo.turntaking_cli --video_path local_demo/assets/water.mp4 --question "Can you describe the video?" --new_query "How many people in the video?" --new_query_pos 20
-# new interrupt query
-python -m local_demo.turntaking_cli --video_path local_demo/assets/water.mp4 --question "Can you describe the video?" --new_query "Sorry to interrupt?" --new_query_pos 20
-# new noise query
-python -m local_demo.turntaking_cli --video_path local_demo/assets/water.mp4 --question "Can you describe the video?" --new_query "Okay, I see." --new_query_pos 20
-```
-
-*audio input*
-
-For better visualization, you can input text, and ChatTTS will automatically convert it into audio. You can then find the generated audio in `local_demo/wav`.
-
-```bash
-cd open_gpt4o
-# new valid query
-python -m local_demo.turntaking_audio_cli --video_path local_demo/assets/water.mp4 --question "Can you describe the video?" --new_query "How many people in the video?" --new_query_pos 20
-# new interrupt query
-python -m local_demo.turntaking_audio_cli --video_path local_demo/assets/water.mp4 --question "Can you describe the video?" --new_query "Sorry to interrupt?" --new_query_pos 20
-# new noise query
-python -m local_demo.turntaking_audio_cli --video_path local_demo/assets/water.mp4 --question "Can you describe the video?" --new_query "Okay, I see." --new_query_pos 20
-```
-
-or you can specify the audio
-
-```bash
-cd open_gpt4o
-python -m local_demo.turntaking_audio_cli --video_path local_demo/assets/water.mp4 --question_audio "XXX.wav" --new_query_audio "XXX.wav" --new_query_pos 20
-```
-
-## Evaluation
-
-To evaluate the interaction ability of **M4** in streaming video contexts, you are encouraged to try our [OmniMMI](https://github.com/bigai-nlco/OmniMMI)!
 
 ## Roadmap
 
-- [ ] This work does not cover audio decoding. I am working on an end-to-end interactive omni-language model (visual/speech-to-speech) and actively seeking additional computational resources😞. *However, for those lacking computational resources too, I believe a streaming TTS could serve as an alternative without significant delay.*
+- [ ] To collect high quanlity visual-audio-speech data
+- [ ] To support streaming
+- [ ] To support multilingual
+- [ ] To support more voice codec
 
 ## Acknowledgement
 
-We Thank [LLaVA-NeXT](https://github.com/LLaVA-VL/LLaVA-NeXT), [LongVA](https://github.com/EvolvingLMMs-Lab/LongVA), [videollm-online](https://github.com/showlab/videollm-online), [LLaMA-Omni](https://github.com/ictnlp/LLaMA-Omni) for open-sourcing their work.
+- visual instruction tuning
+    - [LLaVA-NeXT](https://github.com/LLaVA-VL/LLaVA-NeXT)
+    - [LongVA](https://github.com/EvolvingLMMs-Lab/LongVA)
+- audio/speech instruction tuning 
+    - [LLaMA-Omni](https://github.com/ictnlp/LLaMA-Omni)
+- speech generator tuning
+    - [LLaMA-Omni](https://github.com/ictnlp/LLaMA-Omni)
 
 ## Citation
 

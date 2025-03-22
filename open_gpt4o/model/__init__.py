@@ -3,6 +3,7 @@ import os
 AVAILABLE_MODELS = {
     "llava_llama": "LlavaLlamaForCausalLM, LlavaConfig",
     "llava_qwen": "LlavaQwenForCausalLM, LlavaQwenConfig",
+    "llava_s2s_qwen": "LlavaS2SQwenForCausalLM, LlavaS2SQwenConfig",
     "llava_mistral": "LlavaMistralForCausalLM, LlavaMistralConfig",
     # Add other models as needed
 }

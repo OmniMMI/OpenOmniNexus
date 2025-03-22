@@ -533,7 +533,7 @@ if __name__ == "__main__":
     parser.add_argument("--device", type=str, default="cuda:0")
     args = parser.parse_args()
     
-    model = OpenGPT4o(pretrained="checkpoints/LongVA-7B-Qwen2-Audio", model_name="llava_qwen", device_map=args.device, attn_implementation="eager")
+    model = OpenGPT4o(pretrained="checkpoints/OpenGPT4o-Qwen2-Audio", model_name="llava_s2s_qwen", device_map=args.device, attn_implementation="eager")
     
     visual_path = args.video_path
     input_visuals = [visual_path]

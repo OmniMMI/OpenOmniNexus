@@ -61,21 +61,11 @@ class LlavaS2SQwenForCausalLM(LlavaQwenForCausalLM, GenerationWithCTC):
     config_class = LlavaS2SQwenConfig
 
     def __init__(self, config):
-        super().__init__(self, config)
+        super().__init__(config)
         
         self.post_init()
-        if hasattr(config, "speech_generator_type"):
-            self.speech_generator = build_speech_generator(config)
-
-    def initialize_speech_generator(self, model_args):
-        self.config.speech_generator_type = getattr(model_args, 'speech_generator_type', 'ctc')
-        self.config.ctc_decoder_config = getattr(model_args, 'ctc_decoder_config', '(4,4096,32,11008)')
-        self.config.ctc_upsample_factor = getattr(model_args, 'ctc_upsample_factor', 1)
-        self.config.ctc_loss_weight = getattr(model_args, 'ctc_loss_weight', 1.0)
-        self.config.unit_vocab_size = getattr(model_args, 'unit_vocab_size', 1000)
-        self.tune_speech_generator_only = getattr(model_args, 'tune_speech_generator_only', False)
-        if getattr(self, "speech_generator", None) is None:
-            self.speech_generator = build_speech_generator(self.config)
+        # if hasattr(config, "speech_generator_type"):
+        #     self.speech_generator = build_speech_generator(config)
 
     def forward(
         self,
@@ -107,7 +97,8 @@ class LlavaS2SQwenForCausalLM(LlavaQwenForCausalLM, GenerationWithCTC):
 
         
         if self.training:
-            if self.tune_speech_generator_only:
+            
+            if self.model.tune_speech_generator_only:
                 with torch.no_grad():
                     output = super(LlavaQwenForCausalLM, self).forward(
                         input_ids=input_ids,
@@ -118,10 +109,12 @@ class LlavaS2SQwenForCausalLM(LlavaQwenForCausalLM, GenerationWithCTC):
                         labels=labels,
                         use_cache=use_cache,
                         output_attentions=output_attentions,
-                        output_hidden_states=output_hidden_states,
+                        output_hidden_states=True,
                         return_dict=return_dict,
                     )
-                loss = self.speech_generator(output["hidden_states"][-1], labels, tgt_units)
+                
+                loss = self.model.speech_generator(output["hidden_states"][-1], labels, tgt_units)
+                
             else:
                 output = super(LlavaQwenForCausalLM, self).forward(
                     input_ids=input_ids,
@@ -132,12 +125,13 @@ class LlavaS2SQwenForCausalLM(LlavaQwenForCausalLM, GenerationWithCTC):
                     labels=labels,
                     use_cache=use_cache,
                     output_attentions=output_attentions,
-                    output_hidden_states=output_hidden_states,
+                    output_hidden_states=True,
                     return_dict=return_dict,
                 )
                 lm_loss = output.loss
-                ctc_loss = self.speech_generator(output["hidden_states"][-1], labels, tgt_units)
+                ctc_loss = self.model.speech_generator(output["hidden_states"][-1], labels, tgt_units)
                 loss = lm_loss + ctc_loss * self.config.ctc_loss_weight
+                
             return CausalLMOutputWithPast(
                 loss=loss,
                 logits=output.logits,
@@ -214,7 +208,7 @@ class LlavaS2SQwenForCausalLM(LlavaQwenForCausalLM, GenerationWithCTC):
         )
         hidden_states = outputs["hidden_states"]
         hidden_states = torch.cat([hidden_states[0][-1][:, -1:, :]] + [hidden_states[i][-1] for i in range(1, len(hidden_states))], dim=1)
-        ctc_pred = self.speech_generator.predict(hidden_states.squeeze(0))
+        ctc_pred = self.model.speech_generator.predict(hidden_states.squeeze(0))
         return outputs.sequences, ctc_pred
     
     @torch.no_grad()

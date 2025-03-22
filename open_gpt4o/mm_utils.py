@@ -409,6 +409,13 @@ def get_model_name_from_path(model_path):
         return model_paths[-2] + "_" + model_paths[-1]
     else:
         return model_paths[-1]
+    
+def ctc_postprocess(tokens, blank):
+    _toks = tokens.squeeze(0).tolist()
+    deduplicated_toks = [v for i, v in enumerate(_toks) if i == 0 or v != _toks[i - 1]]
+    hyp = [v for v in deduplicated_toks if v != blank]
+    hyp = " ".join(list(map(str, hyp)))
+    return hyp
 
 
 class KeywordsStoppingCriteria(StoppingCriteria):

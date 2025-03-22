@@ -26,6 +26,7 @@ from .multimodal_projector.builder import build_vision_projector
 
 from .speech_encoder.builder import build_speech_encoder
 from .speech_projector.builder import  build_speech_projector
+from .speech_generator.builder import build_speech_generator
 
 from open_gpt4o.constants import IGNORE_INDEX, IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_PATCH_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
 from open_gpt4o.constants import SPEECH_TOKEN_INDEX, DEFAULT_SPEECH_TOKEN
@@ -39,6 +40,7 @@ class LlavaMetaModel:
     def __init__(self, config):
         super(LlavaMetaModel, self).__init__(config)
 
+        # vision encoder
         if hasattr(config, "mm_vision_tower"):
             delay_load = getattr(config, "delay_load", False)
             self.vision_tower = build_vision_tower(config, delay_load=delay_load)
@@ -52,6 +54,10 @@ class LlavaMetaModel:
         if hasattr(config, "speech_encoder"):
             self.speech_encoder = build_speech_encoder(config)
             self.speech_projector = build_speech_projector(config)
+        
+        # speech generator
+        if hasattr(config, "speech_generator_type"):
+            self.speech_generator = build_speech_generator(config)
 
     def get_vision_tower(self):
         vision_tower = getattr(self, "vision_tower", None)
@@ -122,7 +128,7 @@ class LlavaMetaModel:
             rank0_print(f"Loaded mm projector weights from {pretrain_mm_mlp_adapter}. Incompatible keys: {incompatible_keys}")
             incompatible_keys = self.vision_resampler.load_state_dict(get_w(mm_projector_weights, "vision_resampler"), strict=False)
             rank0_print(f"Loaded vision resampler weights from {pretrain_mm_mlp_adapter}. Incompatible keys: {incompatible_keys}")
-
+    
     # speech encoder
     def get_speech_encoder(self):
         speech_encoder = getattr(self, 'speech_encoder', None)
@@ -157,6 +163,23 @@ class LlavaMetaModel:
                 return {k.split(keyword + '.')[1]: v for k, v in weights.items() if keyword in k}
 
             self.speech_projector.load_state_dict(get_w(pretrain_speech_projector_weights, 'speech_projector'))
+    
+    def get_speech_generator(self):
+        speech_generator = getattr(self, 'speech_generator', None)
+        if type(speech_generator) is list:
+            speech_generator = speech_generator[0]
+        return speech_generator
+    
+    
+    def initialize_speech_generator(self, model_args):
+        self.config.speech_generator_type = getattr(model_args, 'speech_generator_type', 'ctc')
+        self.config.ctc_decoder_config = getattr(model_args, 'ctc_decoder_config', '(4,4096,32,11008)')
+        self.config.ctc_upsample_factor = getattr(model_args, 'ctc_upsample_factor', 1)
+        self.config.ctc_loss_weight = getattr(model_args, 'ctc_loss_weight', 1.0)
+        self.config.unit_vocab_size = getattr(model_args, 'unit_vocab_size', 1000)
+        self.tune_speech_generator_only = getattr(model_args, 'tune_speech_generator_only', False)
+        if getattr(self, "speech_generator", None) is None:
+            self.speech_generator = build_speech_generator(self.config)
     
     
 def unpad_image(tensor, original_size):
@@ -246,6 +269,9 @@ class LlavaMetaForCausalLM(ABC):
     
     def get_speech_projector(self):
         return self.get_model().speech_projector
+
+    def get_speech_generator(self):
+        return self.get_model().get_speech_generator()
 
     def encode_speech(self, speech, speech_lengths):
         speech_encoder_type = self.config.speech_encoder_type

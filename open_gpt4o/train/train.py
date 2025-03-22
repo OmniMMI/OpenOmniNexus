@@ -105,6 +105,14 @@ class ModelArguments:
     speech_encoder_hidden_size: Optional[int] = field(default=1280)
     speech_encoder_type: Optional[str] = field(default="whisper")
     speech_projector_type: Optional[str] = field(default="linear")
+    
+    speech_generator: Optional[str] = field(default=None)
+    speech_generator_type: Optional[str] = field(default="ctc")
+    ctc_decoder_config: Optional[str] = field(default="(2,4096,32,11008)")
+    ctc_upsample_factor: Optional[int] = field(default=25)
+    ctc_loss_weight: Optional[float] = field(default=1.0)
+    unit_vocab_size: Optional[int] = field(default=1000)
+    tune_speech_generator_only: Optional[bool] = False
 
     rope_scaling_factor: Optional[float] = field(default=None)
     rope_scaling_type: Optional[str] = field(default=None)
@@ -694,7 +702,7 @@ def preprocess_qwen(sources, tokenizer: transformers.PreTrainedTokenizer, has_im
         # attention_mask=input_ids.ne(tokenizer.pad_token_id), # tensor(bs x seq_len)
     )
 
-def preprocess_qwen_av(sources, tokenizer: transformers.PreTrainedTokenizer, has_image: bool = False, max_len=2048, system_message: str = "You are a helpful assistant.") -> Dict:
+def preprocess_qwen_av(sources, tokenizer: transformers.PreTrainedTokenizer, has_image: bool = False, has_units: bool = False, max_len=2048, system_message: str = "You are a helpful assistant.") -> Dict:
     # NOTE: the original code force utterance start with <image>, we modify it
     roles = {"human": "<|im_start|>user", "gpt": "<|im_start|>assistant"}
     
@@ -715,18 +723,21 @@ def preprocess_qwen_av(sources, tokenizer: transformers.PreTrainedTokenizer, has
     _assistant = tokenizer("assistant").input_ids + nl_tokens
 
     # Apply prompt templates
-    input_ids, targets = [], []
+    input_ids, targets, tgt_units = [], [], []
     for i, source in enumerate(sources):
         if roles[source[0]["from"]] != roles["human"]:
             source = source[1:]
 
-        input_id, target = [], []
+        input_id, target, tgt_unit = [], [], []
         system = [im_start] + _system + tokenizer(system_message).input_ids + [im_end] + nl_tokens
         input_id += system
         target += [im_start] + [IGNORE_INDEX] * (len(system) - 3) + [im_end] + nl_tokens
         assert len(input_id) == len(target)
         for j, sentence in enumerate(source):
             role = roles[sentence["from"]]
+            
+            if has_units and "tgt_units" in sentence:
+                tgt_unit += sentence["tgt_units"]
             
             
             if has_image and "<image>" in sentence["value"]:
@@ -773,14 +784,25 @@ def preprocess_qwen_av(sources, tokenizer: transformers.PreTrainedTokenizer, has
         # target += [IGNORE_INDEX] * (max_len - len(target))
         input_ids.append(input_id)
         targets.append(target)
+        if has_units:
+            tgt_units.append(tgt_unit)
     input_ids = torch.tensor(input_ids, dtype=torch.long)
     targets = torch.tensor(targets, dtype=torch.long)
-
-    return dict(
-        input_ids=input_ids,  # tensor(bs x seq_len)
-        labels=targets,  # tensor(bs x seq_len)
-        # attention_mask=input_ids.ne(tokenizer.pad_token_id), # tensor(bs x seq_len)
-    )
+    
+    if has_units:
+        tgt_units = torch.tensor(tgt_units, dtype=torch.long)
+        return dict(
+            input_ids=input_ids,  # tensor(bs x seq_len)
+            labels=targets,  # tensor(bs x seq_len)
+            # attention_mask=input_ids.ne(tokenizer.pad_token_id), # tensor(bs x seq_len)
+            tgt_units=tgt_units,
+        )
+    else:
+        return dict(
+            input_ids=input_ids,  # tensor(bs x seq_len)
+            labels=targets,  # tensor(bs x seq_len)
+            # attention_mask=input_ids.ne(tokenizer.pad_token_id), # tensor(bs x seq_len)
+        )
 
 
 
@@ -1053,7 +1075,7 @@ def preprocess_plain(
     return dict(input_ids=input_ids, labels=targets)
 
 
-def preprocess(sources: Sequence[str], tokenizer: transformers.PreTrainedTokenizer, has_image: bool = False) -> Dict:
+def preprocess(sources: Sequence[str], tokenizer: transformers.PreTrainedTokenizer, has_image: bool = False, has_units: bool = False) -> Dict:
     """
     Given a list of sources, each is a conversation list. This transform:
     1. Add signal '### ' at the beginning each sentence, with end signal '\n';
@@ -1073,7 +1095,7 @@ def preprocess(sources: Sequence[str], tokenizer: transformers.PreTrainedTokeniz
         # # visual only
         # return preprocess_qwen(sources, tokenizer, has_image=has_image)
         # visual speech
-        return preprocess_qwen_av(sources, tokenizer, has_image=has_image)
+        return preprocess_qwen_av(sources, tokenizer, has_image=has_image, has_units=has_units)
     if conversation_lib.default_conversation.version == "gemma":
         return preprocess_gemma(sources, tokenizer, has_image=has_image)
     if conversation_lib.default_conversation.version == "llama_v3":
@@ -1382,7 +1404,9 @@ class LazySupervisedDataset(Dataset):
                 sources = copy.deepcopy([e["conversations"] for e in sources])
 
         has_image = ("image" in self.list_data_dict[i]) or ("video" in self.list_data_dict[i] or ("speech" in self.list_data_dict[i]))
-        data_dict = preprocess(sources, self.tokenizer, has_image=has_image)
+        has_units = "tgt_units" in self.list_data_dict[i]["conversations"][-1]
+        
+        data_dict = preprocess(sources, self.tokenizer, has_image=has_image, has_units=has_units)
 
         if "prompt" in data_dict:
             prompt = data_dict["prompt"]
@@ -1390,7 +1414,8 @@ class LazySupervisedDataset(Dataset):
             prompt = None
 
         if isinstance(i, int):
-            data_dict = dict(input_ids=data_dict["input_ids"][0], labels=data_dict["labels"][0])
+            # data_dict = dict(input_ids=data_dict["input_ids"][0], labels=data_dict["labels"][0])
+            data_dict = {k:v[0] for k, v in data_dict.items()}
 
         # image exist in the data
         if "image" in self.list_data_dict[i]:
@@ -1411,6 +1436,8 @@ class LazySupervisedDataset(Dataset):
             data_dict["prompt"] = prompt
 
         data_dict["id"] = self.list_data_dict[i].get("id", i)
+        
+        
 
         return data_dict
 
@@ -1441,6 +1468,12 @@ class DataCollatorForSupervisedDataset(object):
         labels = self.pad_sequence(labels, batch_first=True, padding_value=IGNORE_INDEX)
         batch = dict(input_ids=input_ids, labels=labels.long() if labels.dtype == torch.int32 else labels, attention_mask=input_ids.ne(self.tokenizer.pad_token_id))
         # batch = dict(input_ids=input_ids, labels=labels, attention_mask=input_ids.ne(self.tokenizer.pad_token_id), ids=ids)
+        
+        if "tgt_units" in instances[0]:
+            tgt_units = [instance["tgt_units"] for instance in instances]
+            tgt_units = self.pad_sequence(tgt_units, batch_first=True, padding_value=IGNORE_INDEX)
+            tgt_units = tgt_units.long() if tgt_units.dtype == torch.int32 else tgt_units
+            batch["tgt_units"] = tgt_units
 
         if "image" in instances[0]:
             images = [instance["image"] for instance in instances]
@@ -1521,6 +1554,15 @@ def get_model(model_args, training_args, bnb_model_from_pretrained_args):
         overwrite_config["mm_spatial_pool_out_channels"] = model_args.mm_spatial_pool_out_channels
         overwrite_config["mm_spatial_pool_mode"] = model_args.mm_spatial_pool_mode
 
+    if model_args.speech_generator_type is not None:
+        overwrite_config["speech_generator_type"] = model_args.speech_generator_type
+        overwrite_config["ctc_decoder_config"] = model_args.ctc_decoder_config
+        overwrite_config["ctc_upsample_factor"] = model_args.ctc_upsample_factor
+        overwrite_config["ctc_loss_weight"] = model_args.ctc_loss_weight
+        overwrite_config["unit_vocab_size"] = model_args.unit_vocab_size
+        if model_args.tune_speech_generator_only is not None:
+            overwrite_config["tune_speech_generator_only"] = model_args.tune_speech_generator_only
+
     if overwrite_config:
         assert cfg_pretrained is not None, "cfg_pretrained is None"
 
@@ -1581,8 +1623,9 @@ def get_model(model_args, training_args, bnb_model_from_pretrained_args):
                 **customized_kwargs,
             )
         elif "qwen" in model_args.model_name_or_path.lower():
-            if "moe" in model_args.model_name_or_path.lower() or "A14B" in model_args.model_name_or_path:
-                model = LlavaQwenMoeForCausalLM.from_pretrained(
+            
+            if 's2s' in model_args.model_name_or_path.lower():
+                model = LlavaS2SQwenForCausalLM.from_pretrained(
                     model_args.model_name_or_path,
                     cache_dir=training_args.cache_dir,
                     attn_implementation=training_args.attn_implementation,
@@ -1590,18 +1633,30 @@ def get_model(model_args, training_args, bnb_model_from_pretrained_args):
                     low_cpu_mem_usage=False,
                     **customized_kwargs,
                 )
-                from transformers.models.qwen2_moe.modeling_qwen2_moe import Qwen2MoeSparseMoeBlock
-
-                deepspeed.utils.set_z3_leaf_modules(model, [Qwen2MoeSparseMoeBlock])
+                
             else:
-                model = LlavaQwenForCausalLM.from_pretrained(
-                    model_args.model_name_or_path,
-                    cache_dir=training_args.cache_dir,
-                    attn_implementation=training_args.attn_implementation,
-                    torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
-                    low_cpu_mem_usage=False,
-                    **customized_kwargs,
-                )
+            
+                if "moe" in model_args.model_name_or_path.lower() or "A14B" in model_args.model_name_or_path:
+                    model = LlavaQwenMoeForCausalLM.from_pretrained(
+                        model_args.model_name_or_path,
+                        cache_dir=training_args.cache_dir,
+                        attn_implementation=training_args.attn_implementation,
+                        torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
+                        low_cpu_mem_usage=False,
+                        **customized_kwargs,
+                    )
+                    from transformers.models.qwen2_moe.modeling_qwen2_moe import Qwen2MoeSparseMoeBlock
+
+                    deepspeed.utils.set_z3_leaf_modules(model, [Qwen2MoeSparseMoeBlock])
+                else:
+                    model = LlavaQwenForCausalLM.from_pretrained(
+                        model_args.model_name_or_path,
+                        cache_dir=training_args.cache_dir,
+                        attn_implementation=training_args.attn_implementation,
+                        torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
+                        low_cpu_mem_usage=False,
+                        **customized_kwargs,
+                    )
         elif "gemma" in model_args.model_name_or_path.lower():
             model = LlavaGemmaForCausalLM.from_pretrained(
                 model_args.model_name_or_path,
@@ -1786,7 +1841,12 @@ def train(attn_implementation=None):
             speech_encoder = model.get_speech_encoder()
             speech_encoder.to(dtype=torch.bfloat16 if training_args.bf16 else torch.float16, device=training_args.device)
             
-
+        # speech generator
+        if model_args.speech_generator is not None:
+            model.get_model().initialize_speech_generator(model_args=model_args)
+            speech_generator = model.get_speech_generator()
+            speech_generator.to(dtype=torch.bfloat16 if training_args.bf16 else torch.float16, device=training_args.device)
+        
         ### Deciding train which part of the model
         if model_args.mm_tunable_parts is None:  # traditional way of deciding which part to train
             model.config.tune_mm_mlp_adapter = training_args.tune_mm_mlp_adapter = model_args.tune_mm_mlp_adapter
@@ -1827,6 +1887,8 @@ def train(attn_implementation=None):
             if model_args.speech_encoder is not None:
                 speech_encoder.requires_grad_(False)
                 model.get_model().speech_projector.requires_grad_(False)
+            if model_args.speech_generator is not None:
+                speech_generator.requires_grad_(False)
             # Parse the mm_tunable_parts to decide which parts to unfreeze
             tunable_parts = model_args.mm_tunable_parts.split(",")
             if "mm_mlp_adapter" in tunable_parts:
@@ -1848,7 +1910,11 @@ def train(attn_implementation=None):
                     p.requires_grad = True
             if "mm_language_model" in tunable_parts:
                 for name, param in model.named_parameters():
-                    if "vision_tower" not in name and "mm_projector" not in name and "vision_resampler" not in name and "speech_encoder" not in name and "speech_projector" not in name:
+                    if "vision_tower" not in name and "mm_projector" not in name and "vision_resampler" not in name and "speech_encoder" not in name and "speech_projector" not in name and 'speech_generator' not in name:
+                        param.requires_grad_(True)
+            if "speech_generator" in tunable_parts:
+                for name, param in model.named_parameters():
+                    if "speech_generator" in name:
                         param.requires_grad_(True)
 
         total_params = sum(p.ds_numel if hasattr(p, "ds_numel") else p.numel() for p in model.parameters())
