@@ -1,4 +1,4 @@
-from open_gpt4o.train.train import train
+from open_omni.train.train import train
 import os
 
 

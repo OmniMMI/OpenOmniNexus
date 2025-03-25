@@ -29,8 +29,8 @@ class LiveTrainingArguments(TrainingArguments):
     attn_implementation: str = 'eager' # nan from sdpa
     output_dir: str = 'outputs/debug'
     
-    # OpenGPT4o parameters
-    model_path: str = "ColorfulAI/OpenGPT4o"
+    # OpenOmni parameters
+    model_path: str = "ColorfulAI/OpenOmni"
     model_base: str = None
     video_file: str = None
     # device: str = "cuda"

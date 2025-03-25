@@ -28,10 +28,10 @@ from .speech_encoder.builder import build_speech_encoder
 from .speech_projector.builder import  build_speech_projector
 from .speech_generator.builder import build_speech_generator
 
-from open_gpt4o.constants import IGNORE_INDEX, IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_PATCH_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
-from open_gpt4o.constants import SPEECH_TOKEN_INDEX, DEFAULT_SPEECH_TOKEN
-from open_gpt4o.mm_utils import get_anyres_image_grid_shape
-from open_gpt4o.utils import rank0_print, lengths_to_padding_mask
+from open_omni.constants import IGNORE_INDEX, IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_PATCH_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
+from open_omni.constants import SPEECH_TOKEN_INDEX, DEFAULT_SPEECH_TOKEN
+from open_omni.mm_utils import get_anyres_image_grid_shape
+from open_omni.utils import rank0_print, lengths_to_padding_mask
 import random
 
 

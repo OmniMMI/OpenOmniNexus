@@ -18,7 +18,7 @@ from typing import Optional, Tuple
 import torch
 
 from transformers import AutoConfig, AutoModelForCausalLM, MptConfig, MptForCausalLM, MptModel, GenerationConfig
-from open_gpt4o.model.llava_arch import LlavaMetaModel, LlavaMetaForCausalLM
+from open_omni.model.llava_arch import LlavaMetaModel, LlavaMetaForCausalLM
 
 
 class LlavaMptConfig(MptConfig):

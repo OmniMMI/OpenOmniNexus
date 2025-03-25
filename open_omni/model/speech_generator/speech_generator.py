@@ -5,7 +5,7 @@ import torch.nn.functional as F
 
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer
-from open_gpt4o.constants import IGNORE_INDEX
+from open_omni.constants import IGNORE_INDEX
 
 
 def lengths_to_padding_mask(lens):

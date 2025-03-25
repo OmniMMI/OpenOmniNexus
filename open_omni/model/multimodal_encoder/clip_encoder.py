@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from open_gpt4o.utils import rank0_print
+from open_omni.utils import rank0_print
 from transformers import CLIPVisionModel, CLIPImageProcessor, CLIPVisionConfig
 
 try:

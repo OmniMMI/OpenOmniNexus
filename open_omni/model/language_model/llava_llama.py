@@ -29,7 +29,7 @@ from transformers import LlamaModel, LlamaForCausalLM
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.generation.utils import GenerateOutput
 
-from open_gpt4o.model.llava_arch import LlavaMetaModel, LlavaMetaForCausalLM
+from open_omni.model.llava_arch import LlavaMetaModel, LlavaMetaForCausalLM
 
 
 class LlavaConfig(LlamaConfig):

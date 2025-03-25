@@ -14,20 +14,20 @@ torch.manual_seed(0)
 from fairseq import utils as fairseq_utils
 from fairseq.models.text_to_speech.vocoder import CodeHiFiGANVocoder
 
-from open_gpt4o.model.builder import load_pretrained_model
-from open_gpt4o.mm_utils import tokenizer_image_speech_tokens, process_images, ctc_postprocess
-from open_gpt4o.constants import IMAGE_TOKEN_INDEX, SPEECH_TOKEN_INDEX
+from open_omni.model.builder import load_pretrained_model
+from open_omni.mm_utils import tokenizer_image_speech_tokens, process_images, ctc_postprocess
+from open_omni.constants import IMAGE_TOKEN_INDEX, SPEECH_TOKEN_INDEX
 
 import warnings
 warnings.filterwarnings("ignore")
 
-# config OpenGPT4o
-model_path = "checkpoints/OpenGPT4o-7B-Qwen2"
+# config OpenOmni
+model_path = "checkpoints/OpenOmni-7B-Qwen2"
 video_path = "local_demo/assets/water.mp4"
 audio_path = "local_demo/wav/infer.wav"
 audio_path = "local_demo/wav/water.mp4.wav"
 max_frames_num = 16 # you can change this to several thousands so long you GPU memory can handle it :)
-gen_kwargs = {"do_sample": True, "temperature": 0.5, "top_p": None, "num_beams": 1, "use_cache": True, "max_new_tokens": 1024}
+gen_kwargs = {"do_sample": False, "temperature": 0.0, "top_p": None, "num_beams": 1, "use_cache": True, "max_new_tokens": 1024}
 tokenizer, model, image_processor, _ = load_pretrained_model(model_path, None, "llava_s2s_qwen", device_map="cuda:0")
 
 # config vocoder
@@ -74,7 +74,13 @@ speech = whisper.log_mel_spectrogram(speech, n_mels=128).permute(1, 0).to(device
 speech_length = torch.LongTensor([speech.shape[0]]).to(model.device)
 
 with torch.inference_mode():
-    output_ids, output_units = model.generate(input_ids, images=[video_tensor],  modalities=["video"], speeches=speech.unsqueeze(0), speech_lengths=speech_length, **gen_kwargs)
+    output_ids, output_units = model.generate(
+        input_ids, 
+        images=[video_tensor], 
+        modalities=["video"], 
+        speeches=speech.unsqueeze(0), 
+        speech_lengths=speech_length, 
+        **gen_kwargs)
 outputs = tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
 print(f"Agent: {outputs}")
 

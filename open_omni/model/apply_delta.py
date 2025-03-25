@@ -8,7 +8,7 @@ import argparse
 import torch
 from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModelForCausalLM
-from open_gpt4o import LlavaLlamaForCausalLM
+from open_omni import LlavaLlamaForCausalLM
 
 
 def apply_delta(base_model_path, target_model_path, delta_path):

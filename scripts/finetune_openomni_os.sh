@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=opengpt4o
+#SBATCH --job-name=openomni
 #SBATCH --partition=HGX,DGX
 #SBATCH --account=research
 #SBATCH --qos=lv0b
@@ -7,8 +7,8 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=4
 #SBATCH --gres=gpu:4
-#SBATCH --output=./slurm_logs/finetune-opengpt4o.out
-#SBATCH --error=./slurm_logs/finetune-opengpt4o.error.out
+#SBATCH --output=./slurm_logs/finetune-openomni.out
+#SBATCH --error=./slurm_logs/finetune-openomni.error.out
 
 
 export OMP_NUM_THREADS=4
@@ -26,7 +26,7 @@ export PORT=$MASTER_PORT
 export PYTHONPATH=$(pwd)
 echo $PYTHONPATH
 
-LLM_VERSION="checkpoints/LongVA-7B-S2S-Qwen2-VoiceAssistant"
+LLM_VERSION="checkpoints/Qwen2-7B-Instruct"
 LLM_VERSION_CLEAN="${LLM_VERSION//\//_}"
 VISION_MODEL_VERSION="checkpoints/clip-vit-large-patch14-336"
 VISION_MODEL_VERSION_CLEAN="${VISION_MODEL_VERSION//\//_}"
@@ -39,7 +39,7 @@ PROMPT_VERSION=qwen_1_5
 
 BASE_RUN_NAME="llavanext-${VISION_MODEL_VERSION_CLEAN}-${LLM_VERSION_CLEAN}-mlp2x_gelu-pretrain_blip558k_plain"
 echo "BASE_RUN_NAME: ${BASE_RUN_NAME}"
-MID_RUN_NAME="OpenGPT4o-7B-Qwen2"
+MID_RUN_NAME="OpenOmni-7B-Qwen2"
 echo "MID_RUN_NAME: ${MID_RUN_NAME}"
 
 CKPT_PATH=$LLM_VERSION # this could also be the previous stage checkpoint
@@ -48,15 +48,14 @@ module add cuda11.8
 
 
 ACCELERATE_CPU_AFFINITY=1 torchrun --nproc_per_node="${NUM_GPUS}" --master_port="${PORT}" \
-    open_gpt4o/train/train_mem.py \
+    open_omni/train/train_mem.py \
     --deepspeed scripts/zero2.json \
     --model_name_or_path ${CKPT_PATH} \
     --version ${PROMPT_VERSION} \
-    --data_path inputs/text/voiceassistant_units.json \
+    --data_path inputs/text/llava_next_audio_units.json \
     --image_folder inputs/images/llava-next \
     --speech_folder inputs/speech/voiceassistant \
-    --mm_tunable_parts "speech_generator" \
-    --tune_speech_generator_only True \
+    --mm_tunable_parts "speech_projector,mm_mlp_adapter,mm_language_model,speech_generator" \
     --mm_vision_tower_lr=2e-6 \
     --vision_tower ${VISION_MODEL_VERSION} \
     --speech_encoder ${SPEECH_MODEL_VERSION} \

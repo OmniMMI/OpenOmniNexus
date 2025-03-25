@@ -6,7 +6,7 @@ import ast
 import re
 import torch
 from transformers import StoppingCriteria
-from open_gpt4o.constants import IMAGE_TOKEN_INDEX, SPEECH_TOKEN_INDEX
+from open_omni.constants import IMAGE_TOKEN_INDEX, SPEECH_TOKEN_INDEX
 
 
 def resize_and_center_crop(image, shortest_edge_length):
@@ -417,6 +417,18 @@ def ctc_postprocess(tokens, blank):
     hyp = " ".join(list(map(str, hyp)))
     return hyp
 
+def merge_duplicates(cluster_ids):
+    dup_cluster_list = []
+    duration_list = []
+    count = 1
+    for i in range(0, len(cluster_ids)):
+        if i + 1 < len(cluster_ids) and cluster_ids[i] == cluster_ids[i+1]:
+            count += 1
+        else:
+            dup_cluster_list.append(cluster_ids[i])
+            duration_list.append(count)
+            count = 1
+    return dup_cluster_list, duration_list
 
 class KeywordsStoppingCriteria(StoppingCriteria):
     def __init__(self, keywords, tokenizer, input_ids):

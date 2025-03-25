@@ -51,7 +51,7 @@ CKPT_PATH=$LLM_VERSION # this could also be the previous stage checkpoint
 module add cuda11.8
 
 ACCELERATE_CPU_AFFINITY=1 torchrun --nproc_per_node="${NUM_GPUS}" --master_port="${PORT}" \
-    open_gpt4o/train/train_mem.py \
+    open_omni/train/train_mem.py \
     --deepspeed scripts/zero1.json \
     --model_name_or_path ${CKPT_PATH} \
     --version ${PROMPT_VERSION} \

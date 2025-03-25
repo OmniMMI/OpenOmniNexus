@@ -11,10 +11,10 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.generation.utils import GenerateOutput
 
 # from ...constants import IGNORE_INDEX, IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
-from open_gpt4o.constants import IMAGE_TOKEN_INDEX, SPEECH_TOKEN_INDEX
-from open_gpt4o.model.language_model.llava_qwen import LlavaQwenForCausalLM
-from open_gpt4o.model.speech_generator.builder import build_speech_generator
-from open_gpt4o.model.speech_generator.generation import GenerationWithCTC
+from open_omni.constants import IMAGE_TOKEN_INDEX, SPEECH_TOKEN_INDEX
+from open_omni.model.language_model.llava_qwen import LlavaQwenForCausalLM
+from open_omni.model.speech_generator.builder import build_speech_generator
+from open_omni.model.speech_generator.generation import GenerationWithCTC
 from transformers import Qwen2Config, Qwen2Model, Qwen2ForCausalLM
 
 # from .qwen.modeling_qwen import QWenLMHeadModel, QWenModel
@@ -140,36 +140,18 @@ class LlavaS2SQwenForCausalLM(LlavaQwenForCausalLM, GenerationWithCTC):
                 attentions=output.attentions
             )
         else:
-            if dpo_forward:
-                outputs = self.model(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    position_ids=position_ids,
-                    past_key_values=past_key_values,
-                    inputs_embeds=inputs_embeds,
-                    use_cache=use_cache,
-                    output_attentions=output_attentions,
-                    output_hidden_states=output_hidden_states,
-                    return_dict=return_dict,
-                )
-
-                hidden_states = outputs[0]
-                logits = self.lm_head(hidden_states)
-                return logits, labels
-
-            else:
-                return super().forward(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    position_ids=position_ids,
-                    past_key_values=past_key_values,
-                    inputs_embeds=inputs_embeds,
-                    labels=labels,
-                    use_cache=use_cache,
-                    output_attentions=output_attentions,
-                    output_hidden_states=output_hidden_states,
-                    return_dict=return_dict,
-                )
+            return super().forward(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                past_key_values=past_key_values,
+                inputs_embeds=inputs_embeds,
+                labels=labels,
+                use_cache=use_cache,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+                return_dict=return_dict,
+            )
 
     @torch.no_grad()
     def generate(
@@ -208,6 +190,9 @@ class LlavaS2SQwenForCausalLM(LlavaQwenForCausalLM, GenerationWithCTC):
         )
         hidden_states = outputs["hidden_states"]
         hidden_states = torch.cat([hidden_states[0][-1][:, -1:, :]] + [hidden_states[i][-1] for i in range(1, len(hidden_states))], dim=1)
+        print("*"*50)
+        print(hidden_states.shape)
+        print("*"*50)
         ctc_pred = self.model.speech_generator.predict(hidden_states.squeeze(0))
         return outputs.sequences, ctc_pred
     

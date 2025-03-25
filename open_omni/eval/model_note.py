@@ -8,11 +8,11 @@ import torch
 import transformers
 from tqdm import tqdm
 
-from open_gpt4o.vid_utils import load_video
-from open_gpt4o.model.builder import load_pretrained_model
-from open_gpt4o.mm_utils import get_model_name_from_path, process_images, tokenizer_image_token, KeywordsStoppingCriteria
-from open_gpt4o.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN, IGNORE_INDEX
-from open_gpt4o.conversation import conv_templates, SeparatorStyle
+from open_omni.vid_utils import load_video
+from open_omni.model.builder import load_pretrained_model
+from open_omni.mm_utils import get_model_name_from_path, process_images, tokenizer_image_token, KeywordsStoppingCriteria
+from open_omni.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN, IGNORE_INDEX
+from open_omni.conversation import conv_templates, SeparatorStyle
 
 OPTIONS = ["A", "B", "C", "D", "E"]
 # OPTIONS = ["(1)", "(2)", "(3)", "(4)", "(5)"]

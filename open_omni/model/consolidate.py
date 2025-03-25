@@ -7,8 +7,8 @@ import argparse
 
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
-from open_gpt4o.model import *
-from open_gpt4o.model.utils import auto_upgrade
+from open_omni.model import *
+from open_omni.model.utils import auto_upgrade
 
 
 def consolidate_ckpt(src_path, dst_path):

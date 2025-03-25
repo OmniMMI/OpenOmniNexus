@@ -31,23 +31,23 @@ torch.backends.cuda.matmul.allow_tf32 = True
 warnings.filterwarnings("ignore")
 
 try:
-    from open_gpt4o.constants import (
+    from open_omni.constants import (
         IMAGE_TOKEN_INDEX,
         DEFAULT_IMAGE_TOKEN,
     )
-    from open_gpt4o.conversation import conv_templates, SeparatorStyle
-    from open_gpt4o.mm_utils import (
+    from open_omni.conversation import conv_templates, SeparatorStyle
+    from open_omni.mm_utils import (
         get_model_name_from_path,
         process_images,
         tokenizer_image_token,
         KeywordsStoppingCriteria,
     )
-    from open_gpt4o.model.builder import load_pretrained_model
+    from open_omni.model.builder import load_pretrained_model
 except Exception as e:
     eval_logger.debug(
-        "open_gpt4o is not installed. Please install open_gpt4o to use this model.\nError: %s" % e
+        "open_omni is not installed. Please install open_omni to use this model.\nError: %s" % e
     )
-    raise NotImplementedError("no valid open_gpt4o")
+    raise NotImplementedError("no valid open_omni")
 
 if version.parse(torch.__version__) >= version.parse("2.1.2"):
     best_fit_attn_implementation = "sdpa"
@@ -55,9 +55,9 @@ else:
     best_fit_attn_implementation = "eager"
 
 
-class OpenGPT4o:
+class OpenOmni:
     """
-    OpenGPT4o Model
+    OpenOmni Model
     """
 
     def __init__(
@@ -543,7 +543,7 @@ if __name__ == "__main__":
     parser.add_argument("--new_query_pos", type=int, default=20)
     args = parser.parse_args()
     
-    model = OpenGPT4o(pretrained="checkpoints/M4-LongVA-7B-Qwen2", model_name="llava_qwen", device_map=args.device, attn_implementation="eager")
+    model = OpenOmni(pretrained="checkpoints/M4-LongVA-7B-Qwen2", model_name="llava_qwen", device_map=args.device, attn_implementation="eager")
     
     visual_path = args.video_path
     input_visuals = [visual_path]

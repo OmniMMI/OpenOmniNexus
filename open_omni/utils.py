@@ -9,7 +9,7 @@ import torch
 
 import requests
 
-from open_gpt4o.constants import LOGDIR
+from open_omni.constants import LOGDIR
 
 server_error_msg = "**NETWORK ERROR DUE TO HIGH TRAFFIC. PLEASE REGENERATE OR REFRESH THIS PAGE.**"
 moderation_msg = "I am sorry. Your input may violate our content moderation guidelines. Please avoid using harmful or offensive content."

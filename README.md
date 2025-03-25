@@ -4,8 +4,8 @@
             <img alt="Build" src="http://img.shields.io/badge/cs.CV-arXiv%3Axxxx.xxxxx-B31B1B.svg">
     </a>
     <br> -->
-    <a href="https://huggingface.co/ColorfulAI/OpenGPT4o-7B-Qwen2">
-        <img alt="Build" src="https://img.shields.io/badge/🤗 Model-OpenGPT4o--7B--Qwen2-yellow">
+    <a href="https://huggingface.co/ColorfulAI/OpenOmni-7B-Qwen2">
+        <img alt="Build" src="https://img.shields.io/badge/🤗 Model-OpenOmni--7B--Qwen2-yellow">
     </a>
 
 </p>
@@ -19,7 +19,7 @@
 ## Updates
 
 
-- `2025` **First Release [Open-GPT-4o](https://github.com/patrick-tssn/Open-GPT-4o)**. a fully open-source implementation of a GPT-4o-like speech-to-speech video understanding model.
+- `2025` **First Release [Open-Omni](https://github.com/patrick-tssn/Open-Omni)**. a fully open-source implementation of a GPT-4o-like speech-to-speech video understanding model.
 
 **Table of Contents**
 
@@ -48,7 +48,7 @@
 This codebase is tested on CUDA 11.8 and A800-80G.
 
 ```bash
-conda create -n open_gpt4o python=3.10 -y && conda activate open_gpt4o
+conda create -n open_omni python=3.10 -y && conda activate open_omni
 pip install torch==2.5.0 torchvision==0.20.0 torchaudio==2.5.0 --index-url https://download.pytorch.org/whl/cu118
 pip install -e ".[train]"
 pip install packaging &&  pip install ninja && pip install flash-attn==2.6.3 --no-build-isolation --no-cache-dir
@@ -71,7 +71,7 @@ Data preprocess:
 - Download [mHuBERT](https://dl.fbaipublicfiles.com/hubert/mhubert_base_vp_en_es_fr_it3.pt) and [K-means Model](https://dl.fbaipublicfiles.com/hubert/mhubert_base_vp_en_es_fr_it3_L11_km1000.bin) to `checkpoints/quantizer` for speech units generation. You can refer to the scripts in `preprocess/quantize` for the speech unit generation process.
 
 
-*optional:* In addition, to assist with visual-audio instruction tuning, we convert user queries from [LLaVA-NeXT](https://github.com/LLaVA-VL/LLaVA-NeXT) into audio using [CosyVoice](https://github.com/FunAudioLLM/CosyVoice), you can download it from [LLaVA-NeXT-Audio](https://huggingface.co/datasets/ColorfulAI/LLaVA-NeXT-Audio).
+*optional:* In addition, to assist with visual-audio instruction tuning, we convert user queries from [LLaVA-NeXT](https://github.com/LLaVA-VL/LLaVA-NeXT) into audio using [CosyVoice](https://github.com/FunAudioLLM/CosyVoice). If you are interested in the process of the construction of audio instruction, you can refer to the scripts in `preprocess/tts`.
 
 Data sample
 
@@ -90,7 +90,7 @@ Data sample
             },
             {
                 "from": "gpt",
-                "value": "Hi, I am Open-GPT-4o, the video show ...",
+                "value": "Hi, I am Open-Omni, the video show ...",
                 "tgt_units": [497, 300, 63, ...]
 
             },
@@ -105,7 +105,7 @@ Data sample
 The final data is organized in the following format:
 
 ```
-open_gpt4o/inputs    
+open_omni/inputs    
     ├── images/ # images
       └── llava-next/
         ├── ...
@@ -129,10 +129,10 @@ open_gpt4o/inputs
 
 ### Pretrained Backbone Preparation
 
-Download the pretrained large video language model weights [LongVA-7B](https://huggingface.co/lmms-lab/LongVA-7B), the pretrained audio encoder weights [Whisper](https://github.com/openai/whisper), and the [HiFi-GAN vocoder](https://dl.fbaipublicfiles.com/fairseq/speech_to_speech/vocoder/code_hifigan/mhubert_vp_en_es_fr_it3_400k_layer11_km1000_lj/g_00500000) with [config](https://dl.fbaipublicfiles.com/fairseq/speech_to_speech/vocoder/code_hifigan/mhubert_vp_en_es_fr_it3_400k_layer11_km1000_lj/config.json), and place them in the `open_gpt4o/checkpoints` directory.
+Download the pretrained large video language model weights [LongVA-7B](https://huggingface.co/lmms-lab/LongVA-7B), the pretrained audio encoder weights [Whisper](https://github.com/openai/whisper), and the [HiFi-GAN vocoder](https://dl.fbaipublicfiles.com/fairseq/speech_to_speech/vocoder/code_hifigan/mhubert_vp_en_es_fr_it3_400k_layer11_km1000_lj/g_00500000) with [config](https://dl.fbaipublicfiles.com/fairseq/speech_to_speech/vocoder/code_hifigan/mhubert_vp_en_es_fr_it3_400k_layer11_km1000_lj/config.json), and place them in the `open_omni/checkpoints` directory.
 
 ```
-open_gpt4o/checkpoints    
+open_omni/checkpoints    
     ├── Qwen2-7B-Instruct
     ├── whisper/large-v3.pt
     └── vocoder
@@ -151,7 +151,7 @@ Our training logic is takes three steps:
 If you wish to use other LLMs or instruction tuning data, feel free to follow the [LLaVA-NeXT](https://github.com/LLaVA-VL/LLaVA-NeXT) pipeline. Here, we provide a pipeline to do visual instruction tuning on [Qwen2-7B-Instruct](https://huggingface.co/Qwen/Qwen2-7B-Instruct) or [Llama-3.1-8B](https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct/tree/main) using the datasets [blip_laion_cc_sbu_558k](https://huggingface.co/datasets/liuhaotian/LLaVA-Pretrain), [LLaVA-NeXT-Data](https://huggingface.co/datasets/lmms-lab/LLaVA-NeXT-Data), and [ShareGPTVideo](https://huggingface.co/datasets/ShareGPTVideo/train_video_and_instruction). Feel free to adapt it to other models.
 
 ```bash
-cd open_gpt4o
+cd open_omni
 bash scripts/lvlm_pretrain.sh
 bash scripts/lvlm_finetune.sh
 bash scripts/lvlm_dpo.sh
@@ -171,9 +171,10 @@ To assist those with limited computational resources, we also provide an off-the
 
 *We can combine step 1 and step 2 to perform visual-audio instruction tuning simultaneously:*
 
-To enhance the model's visual-audio understanding capabilities, we offer a script to fine-tune it using the [![Dataset](https://img.shields.io/badge/%F0%9F%A4%97Dataset-LLaVA--NeXT--Audio-yellow)](https://huggingface.co/datasets/ColorfulAI/LLaVA-NeXT-Audio) dataset. This aims to improve visual-audio alignment performance. (This process takes ~140 hours on 4 A800 GPU)
+<details>
+To enhance the model's visual-audio understanding capabilities, we offer a script to fine-tune it using the a synthetic llava-next-audio dataset, which convert the queries of llava-next to speech by CosyVoice dataset. This aims to improve visual-audio alignment performance. (This process takes ~140 hours on 4 A800 GPU)
 
-> NOTE: We find that this process is more prone to collapse than audio instruction tuning alone, so we provide it just for further study.
+> NOTE: We find that this process is more prone to collapse than audio instruction tuning alone, so we provide a model just for further study.
 
 ```bash
 bash scripts/finetune_llavanextaudio.sh
@@ -183,16 +184,17 @@ For those with limited computational resources, we also provide a ready-to-use c
 
 Try the visual-audio base model through `python -m local_demo.baseline_audio_cli --video_path local_demo/assets/water.mp4 --question_audio "local_demo/wav/water.mp4.wav"`
 
+</details>
 
 **3. Speech generator tuning**
 
 For speech generation, we adopt the tuning strategy from [LLaMA-Omni](https://github.com/ictnlp/LLaMA-Omni), utilizing the connectionist temporal classification (CTC) loss to align the hidden states of the LLM with discrete speech units extracted by the HuBERT and K-means models.
 
 ```bash
-bash scritps/finetune_opengpt4o.sh
+bash scritps/finetune_openomni.sh
 ```
 
-*TRIAL: We can streamline these three steps into a single end-to-end process by creating visual-audio-speech data, then running `scripts/finetune_opengpt4o.sh`.*
+*TRIAL: We can streamline these three steps into a single end-to-end process by creating visual-audio-speech data, then running `scripts/finetune_openomni_os.sh`.*
 
 ## Usage
 
@@ -212,15 +214,15 @@ torch.manual_seed(0)
 from fairseq import utils as fairseq_utils
 from fairseq.models.text_to_speech.vocoder import CodeHiFiGANVocoder
 
-from open_gpt4o.model.builder import load_pretrained_model
-from open_gpt4o.mm_utils import tokenizer_image_speech_tokens, process_images, ctc_postprocess
-from open_gpt4o.constants import IMAGE_TOKEN_INDEX, SPEECH_TOKEN_INDEX
+from open_omni.model.builder import load_pretrained_model
+from open_omni.mm_utils import tokenizer_image_speech_tokens, process_images, ctc_postprocess
+from open_omni.constants import IMAGE_TOKEN_INDEX, SPEECH_TOKEN_INDEX
 
 import warnings
 warnings.filterwarnings("ignore")
 
-# config OpenGPT4o
-model_path = "checkpoints/OpenGPT4o-7B-Qwen2"
+# config OpenOmni
+model_path = "checkpoints/OpenOmni-7B-Qwen2"
 video_path = "local_demo/assets/water.mp4"
 audio_path = "local_demo/wav/infer.wav"
 max_frames_num = 16 # you can change this to several thousands so long you GPU memory can handle it :)

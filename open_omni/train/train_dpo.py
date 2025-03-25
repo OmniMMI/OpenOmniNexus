@@ -14,18 +14,17 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-import ast
 import os
 import copy
+import deepspeed
 from dataclasses import dataclass, field
 import json
 import logging
 import pathlib
 from typing import Dict, Optional, Sequence, List
-from PIL import Image, ImageFile
-from packaging import version
-import numpy as np
+import ast
 
+import yaml
 import time
 import random
 import yaml
@@ -35,23 +34,31 @@ import torch
 
 import transformers
 import tokenizers
-import deepspeed
 
-from transformers import AutoConfig
+from open_omni.constants import IGNORE_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN, IMAGE_TOKEN_INDEX
 from torch.utils.data import Dataset
-from open_gpt4o.constants import IGNORE_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN, IMAGE_TOKEN_INDEX
-from open_gpt4o.constants import SPEECH_TOKEN_INDEX, DEFAULT_SPEECH_TOKEN
-from open_gpt4o.train.llava_trainer import LLaVATrainer
+from open_omni.train.llava_trainer import LLaVADPOTrainer
+from open_omni.data_processing.utils import load_jsonl, load_json
+from open_omni import conversation as conversation_lib
+from open_omni.model import *
+from open_omni.model.language_model.llava_qwen import LlavaQwenConfig
+from open_omni.model.language_model.llava_llama import LlavaConfig
+from open_omni.model.language_model.llava_mistral import LlavaMistralConfig
+from open_omni.mm_utils import process_highres_image, process_anyres_image, process_highres_image_crop_split, tokenizer_image_token
+from open_omni.utils import rank0_print
+from transformers import AutoConfig
+import pickle
 
-from open_gpt4o import conversation as conversation_lib
-from open_gpt4o.model import *
-from open_gpt4o.mm_utils import process_highres_image, process_anyres_image, process_highres_image_crop_split, tokenizer_image_token
-from open_gpt4o.utils import rank0_print, process_video_with_pyav, process_audio_with_whisper
-
-torch.multiprocessing.set_sharing_strategy("file_system")
+from trl.trainer.utils import DPODataCollatorWithPadding
+from PIL import Image, ImageFile
+from decord import VideoReader, cpu
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
+from packaging import version
+from typing import Any
+
 local_rank = None
+import numpy as np
 
 IS_TOKENIZER_GREATER_THAN_0_14 = version.parse(tokenizers.__version__) >= version.parse("0.14")
 
@@ -98,30 +105,12 @@ class ModelArguments:
     mm_qformer_depth: Optional[int] = field(default=3)
     mm_qformer_latents: Optional[int] = field(default=32)
     mm_qformer_pretrained: Optional[str] = field(default=None)
-    
-    pretrain_speech_projector: Optional[str] = field(default=None)
-    speech_encoder: Optional[str] = field(default=None)
-    speech_encoder_ds_rate: Optional[int] = field(default=5)
-    speech_encoder_hidden_size: Optional[int] = field(default=1280)
-    speech_encoder_type: Optional[str] = field(default="whisper")
-    speech_projector_type: Optional[str] = field(default="linear")
-    
-    speech_generator: Optional[str] = field(default=None)
-    speech_generator_type: Optional[str] = field(default="ctc")
-    ctc_decoder_config: Optional[str] = field(default="(2,4096,32,11008)")
-    ctc_upsample_factor: Optional[int] = field(default=25)
-    ctc_loss_weight: Optional[float] = field(default=1.0)
-    unit_vocab_size: Optional[int] = field(default=1000)
-    tune_speech_generator_only: Optional[bool] = False
 
     rope_scaling_factor: Optional[float] = field(default=None)
     rope_scaling_type: Optional[str] = field(default=None)
 
     s2: Optional[bool] = field(default=False)
     s2_scales: Optional[str] = field(default="336,672,1008")
-
-    use_pos_skipping: Optional[bool] = field(default=False)
-    pos_skipping_range: Optional[int] = field(default=4096)
 
 
 @dataclass
@@ -130,18 +119,16 @@ class DataArguments:
     lazy_preprocess: bool = False
     is_multimodal: bool = False
     image_folder: Optional[str] = field(default=None)
-    image_aspect_ratio: str = "square"
-    image_grid_pinpoints: Optional[str] = field(default=None)
-    image_crop_resolution: Optional[int] = field(default=None)
-    image_split_resolution: Optional[int] = field(default=None)
-
     video_folder: Optional[str] = field(default=None)
     video_fps: Optional[int] = field(default=1)
+    image_aspect_ratio: str = "square"
+    image_grid_pinpoints: Optional[str] = field(default=None)
+    image_crop_resolution: int = 384
+    image_split_resolution: int = 384
+    input_prompt: Optional[str] = field(default=None)
+    refine_prompt: Optional[bool] = field(default=False)
     frames_upbound: Optional[int] = field(default=0)
-    
-    speech_folder: Optional[str] = field(default=None)
-    
-    is_mop: bool = False
+    num_sample: Optional[int] = field(default=None)
 
 
 @dataclass
@@ -149,11 +136,8 @@ class TrainingArguments(transformers.TrainingArguments):
     cache_dir: Optional[str] = field(default=None)
     optim: str = field(default="adamw_torch")
     remove_unused_columns: bool = field(default=False)
-    
     freeze_mm_mlp_adapter: bool = field(default=False)
     freeze_mm_vision_resampler: bool = field(default=False)
-    freeze_speech_projector: bool = field(default=False)
-    
     mpt_attn_impl: Optional[str] = field(default="triton")
     model_max_length: int = field(
         default=4096,
@@ -168,38 +152,20 @@ class TrainingArguments(transformers.TrainingArguments):
     lora_dropout: float = 0.05
     lora_weight_path: str = ""
     lora_bias: str = "none"
-    
     mm_projector_lr: Optional[float] = None
     mm_vision_tower_lr: Optional[float] = None
-    speech_normalize: Optional[bool] = False
-    speech_projector_lr: Optional[float] = None
-    
     group_by_varlen: bool = field(default=False)
     group_by_modality_length: bool = field(default=False)
-    group_by_modality_length_mm: bool = field(default=False)
     group_by_modality_length_auto: bool = field(default=False)
     auto_find_batch_size: bool = field(default=False)
     gradient_checkpointing: bool = field(default=True)
     verbose_logging: bool = field(default=False)
     attn_implementation: str = field(default="flash_attention_2", metadata={"help": "Use transformers attention implementation."})
-
-
-# @dataclass
-# class EvaluationArguments:
-#     eval_num_processes: int = field(default=1)
-#     task_names: str = field(default=None)
-#     model: str = field(default="llava")
-#     model_args: Optional[str] = field(default=None)
-#     num_fewshot: Optional[int] = field(default=None)
-#     batch_size: int = field(default=1)
-#     device: Optional[str] = field(default=None)
-#     limit: Optional[int] = field(default=None)
-#     check_integrity: Optional[bool] = field(default=False)
-#     show_task_to_terminal: Optional[bool] = field(default=False)
-#     log_samples: Optional[bool] = field(default=True)
-#     gen_kwargs: Optional[str] = field(default="")
-#     log_samples_suffix: Optional[str] = field(default="")
-#     output_path: Optional[str] = field(default="./logs/")
+    dpo_alpha: float = field(default=1.0)
+    beta: float = field(default=0.1)
+    gamma: float = field(default=1.0)
+    generate_during_eval: bool = field(default=False)
+    precompute_ref_log_probs: bool = field(default=False)
 
 
 def maybe_zero_3(param, ignore_status=False, name=None):
@@ -260,8 +226,7 @@ def get_mm_adapter_state_maybe_zero_3(named_params, keys_to_match):
 def find_all_linear_names(model):
     cls = torch.nn.Linear
     lora_module_names = set()
-    # multimodal_keywords = ["mm_projector", "vision_tower", "vision_resampler"]
-    multimodal_keywords = ["mm_projector", "vision_tower", "vision_resampler", "speech_projector"]
+    multimodal_keywords = ["mm_projector", "vision_tower", "vision_resampler"]
     for name, module in model.named_modules():
         if any(mm_keyword in name for mm_keyword in multimodal_keywords):
             continue
@@ -401,66 +366,35 @@ def preprocess_multimodal(sources: Sequence[str], data_args: DataArguments) -> D
 
     for source in sources:
         for sentence in source:
-            # # TODO maybe this should be changed for interleaved data?
-            # # if DEFAULT_IMAGE_TOKEN in sentence["value"] and not sentence["value"].startswith(DEFAULT_IMAGE_TOKEN):
-            # # only check for num_im=1
-            # num_im = len(re.findall(DEFAULT_IMAGE_TOKEN, sentence["value"]))
-            # if num_im == 1 and DEFAULT_IMAGE_TOKEN in sentence["value"] and not sentence["value"].startswith(DEFAULT_IMAGE_TOKEN):
-            #     sentence["value"] = sentence["value"].replace(DEFAULT_IMAGE_TOKEN, "").strip()
-            #     sentence["value"] = DEFAULT_IMAGE_TOKEN + "\n" + sentence["value"]
-            #     sentence["value"] = sentence["value"].strip()
-            #     if "mmtag" in conversation_lib.default_conversation.version:
-            #         sentence["value"] = sentence["value"].replace(DEFAULT_IMAGE_TOKEN, "<Image>" + DEFAULT_IMAGE_TOKEN + "</Image>")
-            
-            # NOTE --> keep interleave data, this is vulnerable to data, don't know what will happen
-            if "mmtag" in conversation_lib.default_conversation.version:
-                sentence["value"] = sentence["value"].replace(DEFAULT_IMAGE_TOKEN, "<Image>" + DEFAULT_IMAGE_TOKEN + "</Image>")
-                
+            if DEFAULT_IMAGE_TOKEN in sentence["value"] and not sentence["value"].startswith(DEFAULT_IMAGE_TOKEN):
+                sentence["value"] = sentence["value"].replace(DEFAULT_IMAGE_TOKEN, "").strip()
+                sentence["value"] = DEFAULT_IMAGE_TOKEN + "\n" + sentence["value"]
+                sentence["value"] = sentence["value"].strip()
+                if "mmtag" in conversation_lib.default_conversation.version:
+                    sentence["value"] = sentence["value"].replace(DEFAULT_IMAGE_TOKEN, "<Image>" + DEFAULT_IMAGE_TOKEN + "</Image>")
             replace_token = DEFAULT_IMAGE_TOKEN
             if data_args.mm_use_im_start_end:
                 replace_token = DEFAULT_IM_START_TOKEN + replace_token + DEFAULT_IM_END_TOKEN
             sentence["value"] = sentence["value"].replace(DEFAULT_IMAGE_TOKEN, replace_token)
 
-            # For videoInstruct-100k noisy_data. TODO: Ask Yuanhan to clean the data instead of leaving the noise code here.
-            sentence["value"] = sentence["value"].replace("QA_GT_caption_based_noisy", "")
-
     return sources
 
 
-def preprocess_multimodal_av(sources: Sequence[str], data_args: DataArguments) -> Dict:
+def preprocess_multimodal_movie(sources: Sequence[str], data_args: DataArguments, video_inputs: str) -> Dict:
     is_multimodal = data_args.is_multimodal
     if not is_multimodal:
         return sources
 
     for source in sources:
         for sentence in source:
-            # # TODO maybe this should be changed for interleaved data?
-            # # if DEFAULT_IMAGE_TOKEN in sentence["value"] and not sentence["value"].startswith(DEFAULT_IMAGE_TOKEN):
-            # # only check for num_im=1
-            # num_im = len(re.findall(DEFAULT_IMAGE_TOKEN, sentence["value"]))
-            # if num_im == 1 and DEFAULT_IMAGE_TOKEN in sentence["value"] and not sentence["value"].startswith(DEFAULT_IMAGE_TOKEN):
-            #     sentence["value"] = sentence["value"].replace(DEFAULT_IMAGE_TOKEN, "").strip()
-            #     sentence["value"] = DEFAULT_IMAGE_TOKEN + "\n" + sentence["value"]
-            #     sentence["value"] = sentence["value"].strip()
-            #     if "mmtag" in conversation_lib.default_conversation.version:
-            #         sentence["value"] = sentence["value"].replace(DEFAULT_IMAGE_TOKEN, "<Image>" + DEFAULT_IMAGE_TOKEN + "</Image>")
-            
-            # NOTE --> keep interleave data, this is vulnerable to data, don't know what will happen
-            if "mmtag" in conversation_lib.default_conversation.version:
-                sentence["value"] = sentence["value"].replace(DEFAULT_IMAGE_TOKEN, "<Image>" + DEFAULT_IMAGE_TOKEN + "</Image>")
-                
-            replace_token = DEFAULT_IMAGE_TOKEN
+            if DEFAULT_IMAGE_TOKEN in sentence["value"]:
+                prompt = sentence["value"].replace(DEFAULT_IMAGE_TOKEN, "").strip()
+            replace_token = video_inputs
             if data_args.mm_use_im_start_end:
                 replace_token = DEFAULT_IM_START_TOKEN + replace_token + DEFAULT_IM_END_TOKEN
             sentence["value"] = sentence["value"].replace(DEFAULT_IMAGE_TOKEN, replace_token)
-            replace_token = DEFAULT_SPEECH_TOKEN
-            sentence["value"] = sentence["value"].replace(DEFAULT_SPEECH_TOKEN, replace_token)
 
-            # For videoInstruct-100k noisy_data. TODO: Ask Yuanhan to clean the data instead of leaving the noise code here.
-            sentence["value"] = sentence["value"].replace("QA_GT_caption_based_noisy", "")
-
-    return sources
-
+    return sources, prompt
 
 
 def preprocess_llama_2(sources, tokenizer: transformers.PreTrainedTokenizer, has_image: bool = False) -> Dict:
@@ -530,12 +464,25 @@ def preprocess_llama_2(sources, tokenizer: transformers.PreTrainedTokenizer, has
         if cur_len < tokenizer.model_max_length:
             if cur_len != total_len:
                 target[:] = IGNORE_INDEX
-                print(f"WARNING: tokenization mismatch: {cur_len} vs. {total_len}." f" (ignored)")
+                rank0_print(f"WARNING: tokenization mismatch: {cur_len} vs. {total_len}." f" (ignored)")
 
     return dict(
         input_ids=input_ids,
         labels=targets,
     )
+
+
+def make_conv(prompt, answer):
+    return [
+        {
+            "from": "human",
+            "value": prompt,
+        },
+        {
+            "from": "gpt",
+            "value": answer,
+        },
+    ]
 
 
 def preprocess_gemma(sources: List[List[Dict[str, str]]], tokenizer: transformers.PreTrainedTokenizer, has_image: bool = False) -> Dict:
@@ -609,7 +556,7 @@ def preprocess_gemma(sources: List[List[Dict[str, str]]], tokenizer: transformer
         if cur_len < tokenizer.model_max_length:
             if cur_len != total_len:
                 target[:] = IGNORE_INDEX
-                print(f"warning: tokenization mismatch: {cur_len} vs. {total_len}." f" (ignored)")
+                rank0_print(f"WARNING: tokenization mismatch: {cur_len} vs. {total_len}." f" (ignored)")
 
     return dict(
         input_ids=input_ids,
@@ -617,19 +564,8 @@ def preprocess_gemma(sources: List[List[Dict[str, str]]], tokenizer: transformer
     )
 
 
-
-
 def preprocess_qwen(sources, tokenizer: transformers.PreTrainedTokenizer, has_image: bool = False, max_len=2048, system_message: str = "You are a helpful assistant.") -> Dict:
-    # NOTE: the original code force utterance start with <image>, we modify it
     roles = {"human": "<|im_start|>user", "gpt": "<|im_start|>assistant"}
-    
-    # add <image> temporarily for preprocessing
-    tokenizer = copy.deepcopy(tokenizer)
-    if has_image:
-        tokenizer.add_tokens(["<image>"], special_tokens=True)
-        tokenizer.add_tokens(["<video>"], special_tokens=True)
-    special_image_token_index = tokenizer.convert_tokens_to_ids("<image>")
-    special_video_token_index = tokenizer.convert_tokens_to_ids("<image>")
 
     im_start, im_end = tokenizer.additional_special_tokens_ids[:2]
     nl_tokens = tokenizer("\n").input_ids
@@ -650,30 +586,10 @@ def preprocess_qwen(sources, tokenizer: transformers.PreTrainedTokenizer, has_im
         assert len(input_id) == len(target)
         for j, sentence in enumerate(source):
             role = roles[sentence["from"]]
-            
-            
             if has_image and "<image>" in sentence["value"]:
-                # # TODO maybe this should be changed for interleaved data?
-                # num_im = len(re.findall(DEFAULT_IMAGE_TOKEN, sentence["value"]))
-                # # multi image can start with text first
-                # if num_im == 1:
-                #     assert sentence["value"].startswith("<image>"), print(sentence["value"])
-                # matches = re.findall("<image>", sentence["value"])
-                # num_image = len(matches)
-                # _input_id = tokenizer(role).input_ids + nl_tokens + [IMAGE_TOKEN_INDEX] * num_image + nl_tokens + tokenizer(sentence["value"][len("<image>") * num_image :]).input_ids + [im_end] + nl_tokens
-                # NOTE allow insert <image> token
-                _input_id = tokenizer(role).input_ids + nl_tokens + tokenizer(sentence["value"]).input_ids + [im_end] + nl_tokens
-            elif has_image and "<video>" in sentence["value"]:
-                # # TODO maybe this should be changed for interleaved data?
-                # num_im = len(re.findall(DEFAULT_IMAGE_TOKEN, sentence["value"]))
-                # # multi image can start with text first
-                # if num_im == 1:
-                #     assert sentence["value"].startswith("<video>"), print(sentence["value"])
-                # matches = re.findall("<video>", sentence["value"])
-                # num_image = len(matches)
-                # _input_id = tokenizer(role).input_ids + nl_tokens + [IMAGE_TOKEN_INDEX] * num_image + nl_tokens + tokenizer(sentence["value"][len("<image>") * num_image :]).input_ids + [im_end] + nl_tokens
-                # NOTE allow insert <image> token
-                _input_id = tokenizer(role).input_ids + nl_tokens + tokenizer(sentence["value"]).input_ids + [im_end] + nl_tokens
+                assert sentence["value"].startswith("<image>"), print(sentence["value"])
+
+                _input_id = tokenizer(role).input_ids + nl_tokens + [IMAGE_TOKEN_INDEX] + nl_tokens + tokenizer(sentence["value"][len("<image>") :]).input_ids + [im_end] + nl_tokens
             else:
                 _input_id = tokenizer(role).input_ids + nl_tokens + tokenizer(sentence["value"]).input_ids + [im_end] + nl_tokens
             input_id += _input_id
@@ -685,10 +601,6 @@ def preprocess_qwen(sources, tokenizer: transformers.PreTrainedTokenizer, has_im
                 raise NotImplementedError
             target += _target
         assert len(input_id) == len(target)
-        # recover special visual tokens
-        for idx, encode_id in enumerate(input_id):
-            if encode_id == special_image_token_index or encode_id == special_video_token_index:
-                input_id[idx] = IMAGE_TOKEN_INDEX
         # input_id += [tokenizer.pad_token_id] * (max_len - len(input_id))
         # target += [IGNORE_INDEX] * (max_len - len(target))
         input_ids.append(input_id)
@@ -702,145 +614,19 @@ def preprocess_qwen(sources, tokenizer: transformers.PreTrainedTokenizer, has_im
         # attention_mask=input_ids.ne(tokenizer.pad_token_id), # tensor(bs x seq_len)
     )
 
-def preprocess_qwen_av(sources, tokenizer: transformers.PreTrainedTokenizer, has_image: bool = False, has_units: bool = False, max_len=2048, system_message: str = "You are a helpful assistant.") -> Dict:
-    # NOTE: the original code force utterance start with <image>, we modify it
-    roles = {"human": "<|im_start|>user", "gpt": "<|im_start|>assistant"}
-    
-    # add <image> temporarily for preprocessing
-    tokenizer = copy.deepcopy(tokenizer)
-    if has_image:
-        tokenizer.add_tokens(["<image>"], special_tokens=True)
-        tokenizer.add_tokens(["<video>"], special_tokens=True)
-        tokenizer.add_tokens(["<speech>"], special_tokens=True)
-    special_image_token_index = tokenizer.convert_tokens_to_ids("<image>")
-    special_video_token_index = tokenizer.convert_tokens_to_ids("<image>")
-    special_speech_token_index = tokenizer.convert_tokens_to_ids("<speech>")
-
-    im_start, im_end = tokenizer.additional_special_tokens_ids[:2]
-    nl_tokens = tokenizer("\n").input_ids
-    _system = tokenizer("system").input_ids + nl_tokens
-    _user = tokenizer("user").input_ids + nl_tokens
-    _assistant = tokenizer("assistant").input_ids + nl_tokens
-
-    # Apply prompt templates
-    input_ids, targets, tgt_units = [], [], []
-    for i, source in enumerate(sources):
-        if roles[source[0]["from"]] != roles["human"]:
-            source = source[1:]
-
-        input_id, target, tgt_unit = [], [], []
-        system = [im_start] + _system + tokenizer(system_message).input_ids + [im_end] + nl_tokens
-        input_id += system
-        target += [im_start] + [IGNORE_INDEX] * (len(system) - 3) + [im_end] + nl_tokens
-        assert len(input_id) == len(target)
-        for j, sentence in enumerate(source):
-            role = roles[sentence["from"]]
-            
-            if has_units and "tgt_units" in sentence:
-                tgt_unit += sentence["tgt_units"]
-            
-            
-            if has_image and "<image>" in sentence["value"]:
-                # # TODO maybe this should be changed for interleaved data?
-                # num_im = len(re.findall(DEFAULT_IMAGE_TOKEN, sentence["value"]))
-                # # multi image can start with text first
-                # if num_im == 1:
-                #     assert sentence["value"].startswith("<image>"), print(sentence["value"])
-                # matches = re.findall("<image>", sentence["value"])
-                # num_image = len(matches)
-                # _input_id = tokenizer(role).input_ids + nl_tokens + [IMAGE_TOKEN_INDEX] * num_image + nl_tokens + tokenizer(sentence["value"][len("<image>") * num_image :]).input_ids + [im_end] + nl_tokens
-                # NOTE allow insert <image> token
-                _input_id = tokenizer(role).input_ids + nl_tokens + tokenizer(sentence["value"]).input_ids + [im_end] + nl_tokens
-            elif has_image and "<video>" in sentence["value"]:
-                # # TODO maybe this should be changed for interleaved data?
-                # num_im = len(re.findall(DEFAULT_IMAGE_TOKEN, sentence["value"]))
-                # # multi image can start with text first
-                # if num_im == 1:
-                #     assert sentence["value"].startswith("<video>"), print(sentence["value"])
-                # matches = re.findall("<video>", sentence["value"])
-                # num_image = len(matches)
-                # _input_id = tokenizer(role).input_ids + nl_tokens + [IMAGE_TOKEN_INDEX] * num_image + nl_tokens + tokenizer(sentence["value"][len("<image>") * num_image :]).input_ids + [im_end] + nl_tokens
-                # NOTE allow insert <image> token
-                _input_id = tokenizer(role).input_ids + nl_tokens + tokenizer(sentence["value"]).input_ids + [im_end] + nl_tokens
-            else:
-                _input_id = tokenizer(role).input_ids + nl_tokens + tokenizer(sentence["value"]).input_ids + [im_end] + nl_tokens
-            
-            input_id += _input_id
-            if role == "<|im_start|>user":
-                _target = [im_start] + [IGNORE_INDEX] * (len(_input_id) - 3) + [im_end] + nl_tokens
-            elif role == "<|im_start|>assistant":
-                _target = [im_start] + [IGNORE_INDEX] * len(tokenizer(role).input_ids) + _input_id[len(tokenizer(role).input_ids) + 1 : -2] + [im_end] + nl_tokens
-            else:
-                raise NotImplementedError
-            target += _target
-        assert len(input_id) == len(target)
-        # recover special visual tokens
-        for idx, encode_id in enumerate(input_id):
-            if encode_id == special_image_token_index or encode_id == special_video_token_index:
-                input_id[idx] = IMAGE_TOKEN_INDEX
-            if encode_id == special_speech_token_index:
-                input_id[idx] = SPEECH_TOKEN_INDEX
-        # input_id += [tokenizer.pad_token_id] * (max_len - len(input_id))
-        # target += [IGNORE_INDEX] * (max_len - len(target))
-        input_ids.append(input_id)
-        targets.append(target)
-        if has_units:
-            tgt_units.append(tgt_unit)
-    input_ids = torch.tensor(input_ids, dtype=torch.long)
-    targets = torch.tensor(targets, dtype=torch.long)
-    
-    if has_units:
-        tgt_units = torch.tensor(tgt_units, dtype=torch.long)
-        return dict(
-            input_ids=input_ids,  # tensor(bs x seq_len)
-            labels=targets,  # tensor(bs x seq_len)
-            # attention_mask=input_ids.ne(tokenizer.pad_token_id), # tensor(bs x seq_len)
-            tgt_units=tgt_units,
-        )
-    else:
-        return dict(
-            input_ids=input_ids,  # tensor(bs x seq_len)
-            labels=targets,  # tensor(bs x seq_len)
-            # attention_mask=input_ids.ne(tokenizer.pad_token_id), # tensor(bs x seq_len)
-        )
-
-
-
 
 def preprocess_llama3(
     sources,
     tokenizer: transformers.PreTrainedTokenizer,
     has_image: bool = False,
-    max_len=8192,
+    max_len=2048,
     system_message: str = "You are a helpful language and vision assistant. You are able to understand the visual content that the user provides, and assist the user with a variety of tasks using natural language.",
 ) -> Dict:
-    # roles = {"human": "<|start_header_id|>user<|end_header_id|>", "gpt": "<|start_header_id|>assistant<|end_header_id|>"}
-    roles = {"human": "user", "gpt": "assistant"}
+    roles = {"human": "<|start_header_id|>user<|end_header_id|>", "gpt": "<|start_header_id|>assistant<|end_header_id|>"}
 
-    # Add image tokens to tokenizer as a special tokens
-    # Use a deepcopy of tokenizer so that we don't modify on the tokenizer
-    tokenizer = copy.deepcopy(tokenizer)
-    # When there is actually an image, we add the image tokens as a special token
-    if has_image:
-        tokenizer.add_tokens(["<image>"], special_tokens=True)
-    image_token_index = tokenizer.convert_tokens_to_ids("<image>")
-    bos_token_id = tokenizer.convert_tokens_to_ids("<|begin_of_text|>")
-    start_header_id = tokenizer.convert_tokens_to_ids("<|start_header_id|>")
-    end_header_id = tokenizer.convert_tokens_to_ids("<|end_header_id|>")
     eot_id = tokenizer.convert_tokens_to_ids("<|eot_id|>")
+    nl_tokens = tokenizer("\n").input_ids
 
-    unmask_tokens = ["<|begin_of_text|>", "<|start_header_id|>", "<|end_header_id|>", "<|eot_id|>", "\n\n"]
-    unmask_tokens_idx = [tokenizer.convert_tokens_to_ids(tok) for tok in unmask_tokens]
-
-    # After update, calling tokenizer of llama3 will
-    # auto add bos id for the tokens. ヽ(｀⌒´)ﾉ
-    def safe_tokenizer_llama3(text):
-        input_ids = tokenizer(text).input_ids
-        if input_ids[0] == bos_token_id:
-            input_ids = input_ids[1:]
-        return input_ids
-
-    nl_tokens = tokenizer.convert_tokens_to_ids("\n\n")
     # Apply prompt templates
     input_ids, targets = [], []
     for i, source in enumerate(sources):
@@ -848,40 +634,25 @@ def preprocess_llama3(
             source = source[1:]
 
         input_id, target = [], []
-
-        # New version, use apply chat template
-        # Build system message for each sentence
-        input_id += tokenizer.apply_chat_template([{"role" : "system", "content" : system_message}])
-        target += [IGNORE_INDEX] * len(input_id)
-
-        for conv in source:
-            # Make sure llava data can load
-            try:
-                role = conv["role"]
-                content = conv["content"]
-            except:
-                role = conv["from"]
-                content = conv["value"]
-
-            role =  roles.get(role, role)
-            
-            conv = [{"role" : role, "content" : content}]
-            # First is bos token we don't need here
-            encode_id = tokenizer.apply_chat_template(conv)[1:]
-            input_id += encode_id
-            if role in ["user", "system"]:
-                target += [IGNORE_INDEX] * len(encode_id)
+        system = tokenizer("<|begin_of_text|>").input_ids + tokenizer("<|start_header_id|>system<|end_header_id|>").input_ids + nl_tokens * 2 + tokenizer(system_message).input_ids + [eot_id]
+        input_id += system
+        target += [IGNORE_INDEX] * len(system)
+        for j, sentence in enumerate(source):
+            role = roles[sentence["from"]]
+            if has_image and "<image>" in sentence["value"]:
+                assert sentence["value"].startswith("<image>"), print(sentence["value"])
+                _input_id = tokenizer(role).input_ids + nl_tokens * 2 + [IMAGE_TOKEN_INDEX] + tokenizer(sentence["value"][len("<image>") :]).input_ids + [eot_id]
             else:
-                target += encode_id
-        
-
-                    
+                _input_id = tokenizer(role).input_ids + nl_tokens * 2 + tokenizer(sentence["value"]).input_ids + [eot_id]
+            input_id += _input_id
+            if role == "<|start_header_id|>user<|end_header_id|>":
+                _target = [IGNORE_INDEX] * len(_input_id)
+            elif role == "<|start_header_id|>assistant<|end_header_id|>":
+                _target = [IGNORE_INDEX] * (len(tokenizer(role).input_ids) + 2) + _input_id[len(tokenizer(role).input_ids) + 2 : -1] + [eot_id]
+            else:
+                raise NotImplementedError
+            target += _target
         assert len(input_id) == len(target), f"{len(input_id)} != {len(target)}"
-        for idx, encode_id in enumerate(input_id):
-            if encode_id in unmask_tokens_idx:
-                target[idx] = encode_id
-            if encode_id == image_token_index:
-                input_id[idx] = IMAGE_TOKEN_INDEX
         input_ids.append(input_id)
         targets.append(target)
     input_ids = torch.tensor(input_ids, dtype=torch.long)
@@ -1075,7 +846,7 @@ def preprocess_plain(
     return dict(input_ids=input_ids, labels=targets)
 
 
-def preprocess(sources: Sequence[str], tokenizer: transformers.PreTrainedTokenizer, has_image: bool = False, has_units: bool = False) -> Dict:
+def preprocess(sources: Sequence[str], tokenizer: transformers.PreTrainedTokenizer, has_image: bool = False) -> Dict:
     """
     Given a list of sources, each is a conversation list. This transform:
     1. Add signal '### ' at the beginning each sentence, with end signal '\n';
@@ -1092,10 +863,7 @@ def preprocess(sources: Sequence[str], tokenizer: transformers.PreTrainedTokeniz
     if conversation_lib.default_conversation.version == "mpt":
         return preprocess_mpt(sources, tokenizer, has_image=has_image)
     if conversation_lib.default_conversation.version == "qwen":
-        # # visual only
-        # return preprocess_qwen(sources, tokenizer, has_image=has_image)
-        # visual speech
-        return preprocess_qwen_av(sources, tokenizer, has_image=has_image, has_units=has_units)
+        return preprocess_qwen(sources, tokenizer, has_image=has_image)
     if conversation_lib.default_conversation.version == "gemma":
         return preprocess_gemma(sources, tokenizer, has_image=has_image)
     if conversation_lib.default_conversation.version == "llama_v3":
@@ -1129,13 +897,22 @@ def preprocess(sources: Sequence[str], tokenizer: transformers.PreTrainedTokeniz
     return dict(input_ids=input_ids, labels=targets)
 
 
-class LazySupervisedDataset(Dataset):
+def load_data(data_path):
+    if "jsonl" in data_path:
+        data_list = load_jsonl(data_path)
+    else:
+        data_list = load_json(data_path)
+    return data_list
+
+
+class DPODataset(Dataset):
+    """Dataset for DPODataset fine-tuning."""
+
     def __init__(self, data_path: str, tokenizer: transformers.PreTrainedTokenizer, data_args: DataArguments):
-        super(LazySupervisedDataset, self).__init__()
-        self.tokenizer = tokenizer
+        super(DPODataset, self).__init__()
+        # Handle multiple JSON files specified in the data_path
         self.list_data_dict = []
 
-        # Handle multiple JSON files specified in the data_path
         if "{" in data_path and "}" in data_path:
             base_path, file_pattern = re.match(r"^(.*)\{(.*)\}\.json$", data_path).groups()
             file_names = file_pattern.split(",")
@@ -1145,10 +922,9 @@ class LazySupervisedDataset(Dataset):
                 data_args.dataset_paths.append(f"{base_path}{file_name}.json")
                 full_path = f"{base_path}{file_name}.json"
                 rank0_print(f"Loading {full_path}")
-                with open(full_path, "r") as file:
-                    cur_data_dict = json.load(file)
-                    rank0_print(f"Loaded {len(cur_data_dict)} samples from {full_path}")
-                    self.list_data_dict.extend(cur_data_dict)
+                cur_data_dict = load_data(full_path)
+                rank0_print(f"Loaded {len(cur_data_dict)} samples from {full_path}")
+                self.list_data_dict.extend(cur_data_dict)
         elif data_path.endswith(".yaml"):
             with open(data_path, "r") as file:
                 yaml_data = yaml.safe_load(file)
@@ -1168,8 +944,7 @@ class LazySupervisedDataset(Dataset):
                     sampling_number = None
 
                     rank0_print(f"Loading {json_path} with {sampling_strategy} sampling strategy")
-                    with open(json_path, "r") as json_file:
-                        cur_data_dict = json.load(json_file)
+                    cur_data_dict = load_data(json_path)
 
                     if ":" in sampling_strategy:
                         sampling_strategy, sampling_number = sampling_strategy.split(":")
@@ -1192,10 +967,9 @@ class LazySupervisedDataset(Dataset):
         else:
             data_args.dataset_paths = [data_path]
             rank0_print(f"Loading {data_path}")
-            with open(data_path, "r") as file:
-                cur_data_dict = json.load(file)
-                rank0_print(f"Loaded {len(cur_data_dict)} samples from {data_path}")
-                self.list_data_dict.extend(cur_data_dict)
+            cur_data_dict = load_data(data_path)
+            rank0_print(f"Loaded {len(cur_data_dict)} samples from {data_path}")
+            self.list_data_dict.extend(cur_data_dict)
 
         rank0_print("Formatting inputs...Skip in lazy mode")
         self.tokenizer = tokenizer
@@ -1208,29 +982,22 @@ class LazySupervisedDataset(Dataset):
     def lengths(self):
         length_list = []
         for sample in self.list_data_dict:
+            # Calculate the length of the prompt, answer, chosen, and rejected text
+            cur_len = len(sample["prompt"].split()) + len(sample["answer"].split()) + len(sample["chosen"].split()) + len(sample["rejected"].split())
+            # Add additional tokens if an image is present
             img_tokens = 128 if "image" in sample else 0
-            length_list.append(sum(len(conv["value"].split()) for conv in sample["conversations"]) + img_tokens)
+            length_list.append(cur_len + img_tokens)
         return length_list
 
     @property
     def modality_lengths(self):
         length_list = []
         for sample in self.list_data_dict:
-            cur_len = sum(len(conv["value"].split()) for conv in sample["conversations"])
-            if not self.data_args.is_mop:
-                cur_len = cur_len if ("image" in sample) or ("video" in sample) or ("speech" in sample) else -cur_len
-                length_list.append(cur_len)
-            else:
-                if ("image" in sample) or ("video" in sample):
-                    if "speech" not in sample:
-                        modality = "image"
-                    else:
-                        modality = "image-speech"
-                elif "speech" in sample:
-                    modality = "speech"
-                else:
-                    modality = "language"
-                length_list.append((modality, cur_len))
+            # Calculate the length of the prompt, answer, chosen, and rejected text
+            cur_len = len(sample["prompt"].split()) + len(sample["answer"].split()) + len(sample["chosen"].split()) + len(sample["rejected"].split())
+            # If the sample includes a video, the length is positive; otherwise, it is negative
+            cur_len = cur_len if ("video" in sample or "image" in sample) else -cur_len
+            length_list.append(cur_len)
         return length_list
 
     def process_image(self, image_file):
@@ -1246,7 +1013,7 @@ class LazySupervisedDataset(Dataset):
         image_size = image.size
         if self.data_args.image_aspect_ratio == "highres":
             image = process_highres_image(image, self.data_args.image_processor, self.data_args.image_grid_pinpoints)
-        elif self.data_args.image_aspect_ratio == "anyres" or "anyres_max" in self.data_args.image_aspect_ratio:
+        elif self.data_args.image_aspect_ratio == "anyres" or "anyres" in self.data_args.image_aspect_ratio:
             image = process_anyres_image(image, self.data_args.image_processor, self.data_args.image_grid_pinpoints)
         elif self.data_args.image_aspect_ratio == "crop_split":
             image = process_highres_image_crop_split(image, self.data_args)
@@ -1273,7 +1040,7 @@ class LazySupervisedDataset(Dataset):
 
     def __getitem__(self, i) -> Dict[str, torch.Tensor]:
         # TODO: define number of retries somewhere else
-        num_base_retries = 10
+        num_base_retries = 3
         num_final_retries = 300
 
         # try the current sample first
@@ -1285,8 +1052,6 @@ class LazySupervisedDataset(Dataset):
                 # sleep 1s in case it is a cloud disk issue
                 print(f"[Try #{attempt_idx}] Failed to fetch sample {i}. Exception:", e)
                 time.sleep(1)
-            # sample = self._get_item(i)
-            # return sample
 
         # try other samples, in case it is file corruption issue
         for attempt_idx in range(num_base_retries):
@@ -1300,52 +1065,35 @@ class LazySupervisedDataset(Dataset):
                 print(f"[Try other #{attempt_idx}] Failed to fetch sample {next_index}. Exception:", e)
                 pass
 
-        try:
-            sample = self._get_item(i)
-            return sample
-        except Exception as e:
-            raise e
+        # still fail, most likely to be path issue or cloud disk issue, retry the same sample for longer
+        # for attempt_idx in range(num_final_retries):
+        #     try:
+        #         sample = self._get_item(i)
+        #         return sample
+        #     except Exception as e:
+        #         # sleep 1s in case it is a cloud disk issue
+        #         print(f"[Final try #{attempt_idx}] Failed to fetch sample {i}. Exception:", e)
+        #         time.sleep(1)
+
+        # Finally raise exception on failing.
+        assert False, "Failed to fetch sample."
 
     def _get_item(self, i) -> Dict[str, torch.Tensor]:
         sources = self.list_data_dict[i]
         if isinstance(i, int):
             sources = [sources]
         assert len(sources) == 1, "Don't know why it is wrapped to a list"  # FIXME
-        
-        if "speech" in sources[0]:
-            speech_file = self.list_data_dict[i]["speech"]
-            speech_dir = self.data_args.speech_folder
-            if type(speech_file) is list:
-                speech = []
-                for s in speech_file:
-                    s = os.path.join(speech_dir, s)
-                    speech_tensor = process_audio_with_whisper(s)
-                    speech_size = torch.LongTensor([speech_tensor.shape[0]])
-                    speech.append((speech_tensor, speech_size))
-                # speech = [process_audio_with_whisper(s) for s in speech_file]
-            else: # HACK: voice instruction
-                speech_file = os.path.join(speech_dir, speech_file)
-                speech_tensor = process_audio_with_whisper(speech_file)
-                speech_size = torch.LongTensor([speech_tensor.shape[0]])
-                speech = [(speech_tensor, speech_size)]
-                # speech = [process_audio_with_whisper(speech_file)]
-                # sources = preprocess_multimodal_av(copy.deepcopy([e["conversations"] for e in sources]), self.data_args)
-                
-                
 
+        suffix = None
         if "image" in sources[0]:
             image_file = self.list_data_dict[i]["image"]
             if type(image_file) is list:
                 image = [self.process_image(f) for f in image_file]
             else:
                 image = [self.process_image(image_file)]
-            # # image only
             # sources = preprocess_multimodal(copy.deepcopy([e["conversations"] for e in sources]), self.data_args)
-            # with speech
-            sources = preprocess_multimodal_av(copy.deepcopy([e["conversations"] for e in sources]), self.data_args)
-            
 
-        elif "video" in sources[0]:
+        elif "video" in sources[0]:  # FIXME: This logic should be largely improved by Yuanhan. It's too messy now.
             video_file = self.list_data_dict[i]["video"]
             video_folder = self.data_args.video_folder
             video_file = os.path.join(video_folder, video_file)
@@ -1353,69 +1101,71 @@ class LazySupervisedDataset(Dataset):
             if not os.path.exists(video_file):
                 print("File {} not exist!".format(video_file))
 
-            try:
-                video = process_video_with_pyav(video_file, self.data_args)
-                # using videoreader
-                # if "shareVideoGPTV" not in video_file and "liangke" not in video_file:
-                # vr = VideoReader(video_file, ctx=cpu(0))
-                # total_frame_num = len(vr)
-                # avg_fps = round(vr.get_avg_fps() / self.data_args.video_fps)
-                # frame_idx = [i for i in range(0, total_frame_num, avg_fps)]
-                # if self.data_args.frames_upbound > 0:
-                #     if len(frame_idx) > self.data_args.frames_upbound:
-                #         uniform_sampled_frames = np.linspace(0, total_frame_num - 1, self.data_args.frames_upbound, dtype=int)
-                #         frame_idx = uniform_sampled_frames.tolist()
-                # video = vr.get_batch(frame_idx).asnumpy()
-                # video = np.array(video)
-                # else:
-                #     if "liangke" in video_file:
-                #         video_file = self.list_data_dict[i]["video"]
-                #     frame_files = [os.path.join(video_file, f) for f in os.listdir(video_file) if os.path.isfile(os.path.join(video_file, f))]
-                #     frame_files.sort()  # Ensure the frames are sorted if they are named sequentially
+            if suffix == "pkl":
+                video_info = pickle.load(open(video_file, "rb"))
+                image = torch.from_numpy(video_info["feats"][:, 1:])
+                input_prompt = video_info["inputs"].replace("...", "")
+                # replace the default image token with multiple tokens
+                input_prompt = input_prompt.replace(DEFAULT_IMAGE_TOKEN, DEFAULT_IMAGE_TOKEN * self.data_args.video_token)
+                sources, query_prompt = preprocess_multimodal_movie(copy.deepcopy([e["conversations"] for e in sources]), self.data_args, input_prompt)
+            else:  # using videoreader
+                if "shareVideoGPTV" not in video_file and "liangke" not in video_file:
+                    vr = VideoReader(video_file, ctx=cpu(0))
+                    total_frame_num = len(vr)
+                    avg_fps = round(vr.get_avg_fps() / self.data_args.video_fps)
+                    frame_idx = [i for i in range(0, total_frame_num, avg_fps)]
+                    if self.data_args.frames_upbound > 0:
+                        if len(frame_idx) > self.data_args.frames_upbound:
+                            uniform_sampled_frames = np.linspace(0, total_frame_num - 1, self.data_args.frames_upbound, dtype=int)
+                            frame_idx = uniform_sampled_frames.tolist()
+                    video = vr.get_batch(frame_idx).asnumpy()
+                    video = np.array(video)
+                else:
+                    if "liangke" in video_file:
+                        video_file = self.list_data_dict[i]["video"]
+                    frame_files = [os.path.join(video_file, f) for f in os.listdir(video_file) if os.path.isfile(os.path.join(video_file, f))]
+                    frame_files.sort()  # Ensure the frames are sorted if they are named sequentially
 
-                #     # TODO: Hard CODE: Determine the indices for uniformly sampling 10 frames
-                #     num_frames_to_sample = 10
-                #     total_frames = len(frame_files)
-                #     sampled_indices = np.linspace(0, total_frames - 1, num_frames_to_sample, dtype=int)
+                    # TODO: Hard CODE: Determine the indices for uniformly sampling 10 frames
+                    num_frames_to_sample = 10
 
-                #     # Read and store the sampled frames
-                #     video = []
-                #     for idx in sampled_indices:
-                #         frame_path = frame_files[idx]
-                #         try:
-                #             with Image.open(frame_path) as img:
-                #                 frame = img.convert("RGB")
-                #                 video.append(frame)
-                #         except IOError:
-                #             print(f"Failed to read frame at path: {frame_path}")
+                    total_frames = len(frame_files)
+
+                    sampled_indices = np.linspace(0, total_frames - 1, num_frames_to_sample, dtype=int)
+
+                    # Read and store the sampled frames
+                    video = []
+                    for idx in sampled_indices:
+                        frame_path = frame_files[idx]
+                        try:
+                            with Image.open(frame_path) as img:
+                                frame = img.convert("RGB")
+                                video.append(frame)
+                        except IOError:
+                            print(f"Failed to read frame at path: {frame_path}")
 
                 processor = self.data_args.image_processor
                 image = processor.preprocess(video, return_tensors="pt")["pixel_values"]
                 image = [(image, video[0].size, "video")]
-                sources = preprocess_multimodal(copy.deepcopy([e["conversations"] for e in sources]), self.data_args)
-            except Exception as e:
-                print(f"Error: {e}")
-                print(f"Failed to read video file: {video_file}")
-                return self._get_item(i + 1)
-        else:
-            if 'speech' in sources[0]:
-                sources = preprocess_multimodal_av(copy.deepcopy([e["conversations"] for e in sources]), self.data_args)
-            else:
-                sources = copy.deepcopy([e["conversations"] for e in sources])
+                # sources = preprocess_multimodal(copy.deepcopy([e["conversations"] for e in sources]), self.data_args)
 
-        has_image = ("image" in self.list_data_dict[i]) or ("video" in self.list_data_dict[i] or ("speech" in self.list_data_dict[i]))
-        has_units = "tgt_units" in self.list_data_dict[i]["conversations"][-1]
-        
-        data_dict = preprocess(sources, self.tokenizer, has_image=has_image, has_units=has_units)
+        else:
+            sources = copy.deepcopy([e["conversations"] for e in sources])
+
+        has_image = ("image" in self.list_data_dict[i]) or ("video" in self.list_data_dict[i])
+        # data_dict = preprocess(sources, self.tokenizer, has_image=has_image)
+        data_dict = copy.deepcopy(self.list_data_dict[i])  # inplace modification following
 
         if "prompt" in data_dict:
             prompt = data_dict["prompt"]
+            prompt = prompt.replace("<image>", "").strip()
+            prompt = "<image>\n" + prompt
+            data_dict["prompt"] = prompt
         else:
             prompt = None
 
-        if isinstance(i, int):
-            # data_dict = dict(input_ids=data_dict["input_ids"][0], labels=data_dict["labels"][0])
-            data_dict = {k:v[0] for k, v in data_dict.items()}
+        if suffix == "pkl":
+            prompt = [query_prompt]
 
         # image exist in the data
         if "image" in self.list_data_dict[i]:
@@ -1428,84 +1178,139 @@ class LazySupervisedDataset(Dataset):
             data_dict["image"] = [
                 (torch.zeros(1, 3, crop_size["height"], crop_size["width"]), (crop_size["width"], crop_size["height"]), "text"),
             ]
-        # speech exist in the data
-        if "speech" in self.list_data_dict[i]:
-            data_dict["speech"] = speech
         # prompt exist in the data
-        if prompt is not None:
-            data_dict["prompt"] = prompt
-
-        data_dict["id"] = self.list_data_dict[i].get("id", i)
-        
-        
-
+        data_dict["has_image"] = has_image
         return data_dict
 
 
 @dataclass
-class DataCollatorForSupervisedDataset(object):
-    """Collate examples for supervised fine-tuning."""
+class DPODataCollator(DPODataCollatorWithPadding):
+    """Collate examples for DPO fine-tuning."""
 
-    tokenizer: transformers.PreTrainedTokenizer
+    # tokenizer: transformers.PreTrainedTokenizer
 
-    def pad_sequence(self, input_ids, batch_first, padding_value):
-        if self.tokenizer.padding_side == "left":
-            input_ids = [torch.flip(_input_ids, [0]) for _input_ids in input_ids]
-        input_ids = torch.nn.utils.rnn.pad_sequence(input_ids, batch_first=batch_first, padding_value=padding_value)
-        if self.tokenizer.padding_side == "left":
-            input_ids = torch.flip(input_ids, [1])
-        return input_ids
+    def collate(self, batch):
+        # first, pad everything to the same length
+        # input_ids, labels = tuple([instance[key] for instance in instances]
+        #                           for key in ("input_ids", "labels"))
+        # input_ids = torch.nn.utils.rnn.pad_sequence(
+        #     input_ids,
+        #     batch_first=True,
+        #     padding_value=self.tokenizer.pad_token_id)
+        # labels = torch.nn.utils.rnn.pad_sequence(labels,
+        #                                          batch_first=True,
+        #                                          padding_value=IGNORE_INDEX)
+        # input_ids = input_ids[:, :self.tokenizer.model_max_length]
+        # labels = labels[:, :self.tokenizer.model_max_length]
+        # batch = dict(
+        #     input_ids=input_ids,
+        #     labels=labels,
+        #     attention_mask=input_ids.ne(self.tokenizer.pad_token_id),
+        # )
+        if self.tokenizer.pad_token_id is None: # FIXME: adapt from train.py
+            self.tokenizer.pad_token_id = 0
+        padded_batch = {}
+        for k in batch[0].keys():
+            if k.endswith("_input_ids") or k.endswith("_attention_mask") or k.endswith("_labels"):
+                # if "prompt" in k:
+                #     to_pad = [torch.LongTensor(ex[k][::-1]) for ex in batch]
+                # else:
+                to_pad = [torch.LongTensor(ex[k]) for ex in batch]
+                if k.endswith("_input_ids"):
+                    padding_value = self.tokenizer.pad_token_id
+                elif k.endswith("_labels"):
+                    padding_value = self.label_pad_token_id
+                else:
+                    continue
+                # elif k.endswith("_attention_mask"):
+                #     padding_value = self.padding_value
+                # else:
+                #     raise ValueError(f"Unexpected key in batch '{k}'")
 
-    def __call__(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
-        input_ids, labels = tuple([instance[key] for instance in instances] for key in ("input_ids", "labels"))
-        # input_ids, labels, ids = tuple([instance[key] for instance in instances] for key in ("input_ids", "labels", "id"))
-        input_ids = [_input_ids[: self.tokenizer.model_max_length] for _input_ids in input_ids]
-        labels = [_labels[: self.tokenizer.model_max_length] for _labels in labels]
-        if self.tokenizer.pad_token_id is None:
-            # self.tokenizer.pad_token_id = self.tokenizer.eos_token_id  # FIXME: this could only be triggered for llama3 model.
-            self.tokenizer.pad_token_id = 0 # This gets the best result. Don't know why.
-        input_ids = self.pad_sequence(input_ids, batch_first=True, padding_value=self.tokenizer.pad_token_id)
-        labels = self.pad_sequence(labels, batch_first=True, padding_value=IGNORE_INDEX)
-        batch = dict(input_ids=input_ids, labels=labels.long() if labels.dtype == torch.int32 else labels, attention_mask=input_ids.ne(self.tokenizer.pad_token_id))
-        # batch = dict(input_ids=input_ids, labels=labels, attention_mask=input_ids.ne(self.tokenizer.pad_token_id), ids=ids)
-        
-        if "tgt_units" in instances[0]:
-            tgt_units = [instance["tgt_units"] for instance in instances]
-            tgt_units = self.pad_sequence(tgt_units, batch_first=True, padding_value=IGNORE_INDEX)
-            tgt_units = tgt_units.long() if tgt_units.dtype == torch.int32 else tgt_units
-            batch["tgt_units"] = tgt_units
-
-        if "image" in instances[0]:
-            images = [instance["image"] for instance in instances]
-
-            batch["image_sizes"] = [im[1] for im_list in images for im in im_list]
-            batch["modalities"] = [im[2] for im_list in images for im in im_list]
-            images = [im[0] for im_list in images for im in im_list]
-
-            if all(x is not None and x.shape == images[0].shape for x in images):
-                # Image: (N, P, C, H, W)
-                # Video: (N, F, C, H, W)
-                batch["images"] = torch.stack(images)
+                padded_batch[k] = torch.nn.utils.rnn.pad_sequence(to_pad, batch_first=True, padding_value=padding_value)
+                # for the prompt, flip back so padding is on left side
+                # if "prompt" in k:
+                #     padded_batch[k] = padded_batch[k].flip(dims=[1])
             else:
-                batch["images"] = images
-        
-        # gather speech
-        if "speech" in instances[0]:
-            speeches = [instance["speech"] for instance in instances]
-            batch["speech_lengths"] = torch.stack([sp[1] for speech in speeches for sp in speech], dim=0)
-            batch["speeches"] = torch.stack([sp[0] for speech in speeches for sp in speech], dim=0)
+                padded_batch[k] = [ex[k] for ex in batch]
+        for k in ["chosen_input_ids", "rejected_input_ids"]:
+            attn_k = k.replace("input_ids", "attention_mask")
+            padded_batch[attn_k] = padded_batch[k].ne(self.tokenizer.pad_token_id)
+        return padded_batch
 
-        if "prompt" in instances[0]:
-            batch["prompts"] = [instance["prompt"] for instance in instances]
+    def tokenize_batch_element(self, prompt: str, chosen: str, rejected: str, has_image: bool = True) -> Dict:
+        """Tokenize a single batch element.
 
+        At this stage, we don't convert to PyTorch tensors yet; we just handle the truncation
+            in case the prompt + chosen or prompt + rejected responses is/are too long. First
+            we truncate the prompt; if we're still too long, we truncate the chosen/rejected.
+
+        We also create the labels for the chosen/rejected responses, which are of length equal to
+            the sum of the length of the prompt and the chosen/rejected response, with
+            label_pad_token_id  for the prompt tokens.
+        """
+        # import pdb; pdb.set_trace()
+        batch = {}
+
+        chosen_sources = make_conv(prompt, chosen)
+        rejected_sources = make_conv(prompt, rejected)
+        chosen_data_dict = preprocess([chosen_sources], self.tokenizer, has_image=has_image)
+        # chosen_data_dict['attention_mask'] = chosen_data_dict["input_ids"].ne(self.tokenizer.pad_token_id)
+
+        rejected_data_dict = preprocess([rejected_sources], self.tokenizer, has_image=has_image)
+        # rejected_data_dict['attention_mask'] = rejected_data_dict["input_ids"].ne(self.tokenizer.pad_token_id)
+
+        chosen_data_dict = {k: v[0] for k, v in chosen_data_dict.items()}
+        rejected_data_dict = {k: v[0] for k, v in rejected_data_dict.items()}
+
+        for k, toks in {
+            "chosen": chosen_data_dict,
+            "rejected": rejected_data_dict,
+        }.items():
+            for type_key, tokens in toks.items():
+                if type_key == "token_type_ids":
+                    continue
+                batch[f"{k}_{type_key}"] = tokens
         return batch
 
+    def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, Any]:
 
-def make_supervised_data_module(tokenizer: transformers.PreTrainedTokenizer, data_args) -> Dict:
+        tokenized_batch = []
+        Xs, keys = [], []
+        for feature in features:
+            prompt = feature["prompt"]
+            chosen = feature["chosen"]
+            rejected = feature["rejected"]
+            has_image = feature["has_image"]
+            # Xs.append(feature[has_X])
+            # keys.append(has_X)
+
+            batch_element = self.tokenize_batch_element(prompt, chosen, rejected, has_image=has_image)
+            tokenized_batch.append(batch_element)
+
+        # return collated batch
+        padded_batch = self.collate(tokenized_batch)
+        # import pdb;pdb.set_trace()
+        if "image" in features[0]:
+            # instances[1]['image'][0][0].shape
+            # torch.Size([5, 3, 224, 224])
+            images = [instance["image"] for instance in features]
+
+            padded_batch["image_sizes"] = [im[1] for im_list in images for im in im_list]
+            padded_batch["modalities"] = [im[2] for im_list in images for im in im_list]
+            images = [im[0] for im_list in images for im in im_list]
+            # import pdb;pdb.set_trace()
+
+            padded_batch["images"] = images
+            # padded_batch["images"] =[padded_batch["modalities"], images]
+
+        return padded_batch
+
+
+def make_dpo_data_module(tokenizer: transformers.PreTrainedTokenizer, data_args) -> Dict:
     """Make dataset and collator for supervised fine-tuning."""
-    train_dataset = LazySupervisedDataset(tokenizer=tokenizer, data_path=data_args.data_path, data_args=data_args)
-    data_collator = DataCollatorForSupervisedDataset(tokenizer=tokenizer)
-    return dict(train_dataset=train_dataset, eval_dataset=None, data_collator=data_collator)
+    train_dataset = DPODataset(tokenizer=tokenizer, data_path=data_args.data_path, data_args=data_args)
+    return train_dataset
 
 
 def get_model(model_args, training_args, bnb_model_from_pretrained_args):
@@ -1513,28 +1318,28 @@ def get_model(model_args, training_args, bnb_model_from_pretrained_args):
     if training_args.attn_implementation == "sdpa" and torch.__version__ < "2.1.2":
         raise ValueError("The 'sdpa' attention implementation requires torch version 2.1.2 or higher.")
 
+    ######################### Overwrite config #########################
     customized_kwargs = dict()
     customized_kwargs.update(bnb_model_from_pretrained_args)
-    cfg_pretrained = None
-
     overwrite_config = {}
-    if any(
-        [
-            model_args.rope_scaling_factor is not None,
-            model_args.rope_scaling_type is not None,
-            model_args.mm_spatial_pool_stride is not None,
-            model_args.mm_spatial_pool_out_channels is not None,
-            model_args.mm_spatial_pool_mode is not None,
-            model_args.mm_resampler_type is not None,
-        ]
+    cfg_pretrained = None
+    if "qwen" in model_args.model_name_or_path.lower():
+        cfg_pretrained = LlavaQwenConfig.from_pretrained(model_args.model_name_or_path)
+    elif "mistral" in model_args.model_name_or_path.lower() or "zephyr" in model_args.model_name_or_path.lower():
+        cfg_pretrained = LlavaMistralConfig.from_pretrained(model_args.model_name_or_path)
+    elif (
+        "wizardlm-2" in model_args.model_name_or_path.lower()
+        or "vicuna" in model_args.model_name_or_path.lower()
+        or "llama" in model_args.model_name_or_path.lower()
+        or "yi" in model_args.model_name_or_path.lower()
+        or "nous-hermes" in model_args.model_name_or_path.lower()
+        and "wizard-2" in model_args.model_name_or_path.lower()
     ):
+        cfg_pretrained = LlavaConfig.from_pretrained(model_args.model_name_or_path)
+    else:
         cfg_pretrained = AutoConfig.from_pretrained(model_args.model_name_or_path)
 
-    if model_args.use_pos_skipping is not None and model_args.pos_skipping_range is not None:
-        overwrite_config["use_pos_skipping"] = model_args.use_pos_skipping
-        overwrite_config["pos_skipping_range"] = model_args.pos_skipping_range
-
-    if model_args.rope_scaling_factor is not None and model_args.rope_scaling_type is not None:
+    if model_args.rope_scaling_factor is not None and model_args.rope_scaling_type is not None and cfg_pretrained is not None:
         overwrite_config["rope_scaling"] = {
             "factor": model_args.rope_scaling_factor,
             "type": model_args.rope_scaling_type,
@@ -1548,30 +1353,22 @@ def get_model(model_args, training_args, bnb_model_from_pretrained_args):
         # overwrite_config["max_sequence_length"] = model_args.max_sequence_length
         # overwrite_config["tokenizer_model_max_length"] = model_args.tokenizer_model_max_length
 
-    if model_args.mm_spatial_pool_stride is not None and model_args.mm_spatial_pool_out_channels is not None and model_args.mm_spatial_pool_mode is not None and model_args.mm_resampler_type is not None:
+    if model_args.mm_spatial_pool_stride is not None and model_args.mm_spatial_pool_out_channels is not None and model_args.mm_spatial_pool_mode is not None and model_args.mm_resampler_type is not None and cfg_pretrained is not None:
         overwrite_config["mm_resampler_type"] = model_args.mm_resampler_type
         overwrite_config["mm_spatial_pool_stride"] = model_args.mm_spatial_pool_stride
         overwrite_config["mm_spatial_pool_out_channels"] = model_args.mm_spatial_pool_out_channels
         overwrite_config["mm_spatial_pool_mode"] = model_args.mm_spatial_pool_mode
 
-    if model_args.speech_generator_type is not None:
-        overwrite_config["speech_generator_type"] = model_args.speech_generator_type
-        overwrite_config["ctc_decoder_config"] = model_args.ctc_decoder_config
-        overwrite_config["ctc_upsample_factor"] = model_args.ctc_upsample_factor
-        overwrite_config["ctc_loss_weight"] = model_args.ctc_loss_weight
-        overwrite_config["unit_vocab_size"] = model_args.unit_vocab_size
-        if model_args.tune_speech_generator_only is not None:
-            overwrite_config["tune_speech_generator_only"] = model_args.tune_speech_generator_only
-
     if overwrite_config:
-        assert cfg_pretrained is not None, "cfg_pretrained is None"
-
         rank0_print(f"Overwriting config with {overwrite_config}")
         for k, v in overwrite_config.items():
             setattr(cfg_pretrained, k, v)
 
         customized_kwargs["config"] = cfg_pretrained
 
+    ######################### Finish Overwrite ###########################
+
+    ref_model = None
     if model_args.model_class_name is not None:
         actual_model_class_name = f"{model_args.model_class_name}ForCausalLM"
         model_class = getattr(transformers, actual_model_class_name)
@@ -1622,10 +1419,10 @@ def get_model(model_args, training_args, bnb_model_from_pretrained_args):
                 low_cpu_mem_usage=False,
                 **customized_kwargs,
             )
-        elif "qwen" in model_args.model_name_or_path.lower():
-            
-            if 's2s' in model_args.model_name_or_path.lower():
-                model = LlavaS2SQwenForCausalLM.from_pretrained(
+
+            if "zero3" in training_args.deepspeed:
+                rank0_print("#### Initialize reference model #####")
+                ref_model = LlavaLlamaForCausalLM.from_pretrained(
                     model_args.model_name_or_path,
                     cache_dir=training_args.cache_dir,
                     attn_implementation=training_args.attn_implementation,
@@ -1633,30 +1430,41 @@ def get_model(model_args, training_args, bnb_model_from_pretrained_args):
                     low_cpu_mem_usage=False,
                     **customized_kwargs,
                 )
-                
-            else:
-            
-                if "moe" in model_args.model_name_or_path.lower() or "A14B" in model_args.model_name_or_path:
-                    model = LlavaQwenMoeForCausalLM.from_pretrained(
-                        model_args.model_name_or_path,
-                        cache_dir=training_args.cache_dir,
-                        attn_implementation=training_args.attn_implementation,
-                        torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
-                        low_cpu_mem_usage=False,
-                        **customized_kwargs,
-                    )
-                    from transformers.models.qwen2_moe.modeling_qwen2_moe import Qwen2MoeSparseMoeBlock
 
-                    deepspeed.utils.set_z3_leaf_modules(model, [Qwen2MoeSparseMoeBlock])
-                else:
-                    model = LlavaQwenForCausalLM.from_pretrained(
-                        model_args.model_name_or_path,
-                        cache_dir=training_args.cache_dir,
-                        attn_implementation=training_args.attn_implementation,
-                        torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
-                        low_cpu_mem_usage=False,
-                        **customized_kwargs,
-                    )
+        elif "qwen" in model_args.model_name_or_path.lower() or "quyen" in model_args.model_name_or_path.lower():
+            if "moe" in model_args.model_name_or_path.lower():
+                model = LlavaQwenMoeForCausalLM.from_pretrained(
+                    model_args.model_name_or_path,
+                    cache_dir=training_args.cache_dir,
+                    attn_implementation=training_args.attn_implementation,
+                    torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
+                    low_cpu_mem_usage=False,
+                    **customized_kwargs,
+                )
+                from transformers.models.qwen2_moe.modeling_qwen2_moe import Qwen2MoeSparseMoeBlock
+
+                deepspeed.utils.set_z3_leaf_modules(model, [Qwen2MoeSparseMoeBlock])
+            else:
+                model = LlavaQwenForCausalLM.from_pretrained(
+                    model_args.model_name_or_path,
+                    cache_dir=training_args.cache_dir,
+                    attn_implementation=training_args.attn_implementation,
+                    torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
+                    low_cpu_mem_usage=False,
+                    **customized_kwargs,
+                )
+
+            if "zero3" in training_args.deepspeed:
+                rank0_print("#### Initialize reference model #####")
+                ref_model = LlavaQwenForCausalLM.from_pretrained(
+                    model_args.model_name_or_path,
+                    cache_dir=training_args.cache_dir,
+                    attn_implementation=training_args.attn_implementation,
+                    torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
+                    low_cpu_mem_usage=False,
+                    **customized_kwargs,
+                )
+
         elif "gemma" in model_args.model_name_or_path.lower():
             model = LlavaGemmaForCausalLM.from_pretrained(
                 model_args.model_name_or_path,
@@ -1670,14 +1478,9 @@ def get_model(model_args, training_args, bnb_model_from_pretrained_args):
             raise ValueError(f"Unknown model class {model_args}")
     else:
         model = transformers.LlamaForCausalLM.from_pretrained(
-            model_args.model_name_or_path,
-            cache_dir=training_args.cache_dir,
-            attn_implementation=training_args.attn_implementation,
-            torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
-            low_cpu_mem_usage=False,
-            **customized_kwargs,
+            model_args.model_name_or_path, cache_dir=training_args.cache_dir, attn_implementation=training_args.attn_implementation, torch_dtype=(torch.bfloat16 if training_args.bf16 else None), **customized_kwargs
         )
-    return model
+    return model, ref_model
 
 
 def train(attn_implementation=None):
@@ -1717,13 +1520,8 @@ def train(attn_implementation=None):
             )
         )
 
-    model = get_model(model_args, training_args, bnb_model_from_pretrained_args)
+    model, ref_model = get_model(model_args, training_args, bnb_model_from_pretrained_args)
     model.config.use_cache = False
-    if model_args.rope_scaling_factor is not None and model_args.rope_scaling_type is not None:
-        model.config.rope_scaling = {
-            "factor": model_args.rope_scaling_factor,
-            "type": model_args.rope_scaling_type,
-        }
 
     if model_args.freeze_backbone:
         model.model.requires_grad_(False)
@@ -1737,12 +1535,17 @@ def train(attn_implementation=None):
     if training_args.gradient_checkpointing:
         if hasattr(model, "enable_input_require_grads"):
             model.enable_input_require_grads()
+            if ref_model is not None:
+                ref_model.enable_input_require_grads()
         else:
 
             def make_inputs_require_grad(module, input, output):
                 output.requires_grad_(True)
 
             model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
+
+            if ref_model is not None:
+                ref_model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
 
     if training_args.lora_enable:
         from peft import LoraConfig, get_peft_model
@@ -1763,18 +1566,13 @@ def train(attn_implementation=None):
         rank0_print("Adding LoRA adapters...")
         model = get_peft_model(model, lora_config)
 
-    if "mistral" in model_args.model_name_or_path.lower() or "mixtral" in model_args.model_name_or_path.lower() or "zephyr" in model_args.model_name_or_path.lower():
+    if "mpt" in model_args.model_name_or_path:
+        tokenizer = transformers.AutoTokenizer.from_pretrained(model_args.model_name_or_path, cache_dir=training_args.cache_dir, model_max_length=training_args.model_max_length, padding_side="right")
+    elif "mistral" in model_args.model_name_or_path.lower() or "mixtral" in model_args.model_name_or_path.lower() or "zephyr" in model_args.model_name_or_path.lower():
         tokenizer = transformers.AutoTokenizer.from_pretrained(model_args.model_name_or_path, cache_dir=training_args.cache_dir, model_max_length=training_args.model_max_length, padding_side="left")
     elif "qwen" in model_args.model_name_or_path.lower():
         tokenizer = transformers.AutoTokenizer.from_pretrained(model_args.model_name_or_path, cache_dir=training_args.cache_dir, model_max_length=training_args.model_max_length, padding_side="right")
-    elif (
-        "wizardlm-2" in model_args.model_name_or_path.lower()
-        or "vicuna" in model_args.model_name_or_path.lower()
-        or "llama" in model_args.model_name_or_path.lower()
-        or "yi" in model_args.model_name_or_path.lower()
-        or "nous-hermes" in model_args.model_name_or_path.lower()
-        and "wizard-2" in model_args.model_name_or_path.lower()
-    ):
+    else:  # for all other models
         tokenizer = transformers.AutoTokenizer.from_pretrained(
             model_args.model_name_or_path,
             cache_dir=training_args.cache_dir,
@@ -1806,47 +1604,34 @@ def train(attn_implementation=None):
 
         vision_tower = model.get_vision_tower()
         vision_tower.to(dtype=torch.bfloat16 if training_args.bf16 else torch.float16, device=training_args.device)
+
         data_args.image_processor = vision_tower.image_processor
         data_args.is_multimodal = True
 
         model.config.image_aspect_ratio = data_args.image_aspect_ratio
         if data_args.image_grid_pinpoints is not None:
-            if isinstance(data_args.image_grid_pinpoints, str) and "x" in data_args.image_grid_pinpoints:
-                try:
-                    patch_size = data_args.image_processor.size[0]
-                except Exception as e:
-                    patch_size = data_args.image_processor.size["shortest_edge"]
-
-                assert patch_size in [224, 336, 384, 448, 512], "patch_size should be in [224, 336, 384, 448, 512]"
-                # Use regex to extract the range from the input string
+            # for input like "(1x1)...(3x3)", convert to [(1, 1), (2, 1), (3, 1), (1, 2), (2, 2), (3, 2), (1, 3), (2, 3), (3, 3)]
+            if "x" in data_args.image_grid_pinpoints and "..." in data_args.image_grid_pinpoints:
+                vis_encoder_size = data_args.image_processor.size[0]
                 matches = re.findall(r"\((\d+)x(\d+)\)", data_args.image_grid_pinpoints)
                 range_start = tuple(map(int, matches[0]))
                 range_end = tuple(map(int, matches[-1]))
-                # Generate a matrix of tuples from (range_start[0], range_start[1]) to (range_end[0], range_end[1])
                 grid_pinpoints = [(i, j) for i in range(range_start[0], range_end[0] + 1) for j in range(range_start[1], range_end[1] + 1)]
-                # Multiply all elements by patch_size
-                data_args.image_grid_pinpoints = [[dim * patch_size for dim in pair] for pair in grid_pinpoints]
-            elif isinstance(data_args.image_grid_pinpoints, str):
-                data_args.image_grid_pinpoints = ast.literal_eval(data_args.image_grid_pinpoints)
-
+                grid_pinpoints = [[dim * vis_encoder_size for dim in pair] for pair in grid_pinpoints]
+                data_args.image_grid_pinpoints = grid_pinpoints
+            elif "x" in data_args.image_grid_pinpoints:
+                vis_encoder_size = data_args.image_processor.size[0]
+                assert vis_encoder_size in [224, 336, 384, 448, 512], "vis_encoder_size should be in [224, 336, 384, 448, 512]"
+                grid_pinpoints = data_args.image_grid_pinpoints.replace(" ", "").replace("x", ",")[1:-1].split("),(")
+                data_args.image_grid_pinpoints = [[int(x) * vis_encoder_size for x in item.split(",")] for item in grid_pinpoints]
+            else:
+                data_args.image_grid_pinpoints = ast.literal_eval(data_args.image_grid_pinpoints)  # for backward compatibility
         model.config.image_grid_pinpoints = data_args.image_grid_pinpoints
         model.config.image_crop_resolution = data_args.image_crop_resolution
         model.config.image_split_resolution = data_args.image_split_resolution
         model.config.tokenizer_padding_side = tokenizer.padding_side
         model.config.tokenizer_model_max_length = tokenizer.model_max_length
-        
-        # speech encoder
-        if model_args.speech_encoder is not None:
-            model.get_model().initialize_speech_modules(model_args=model_args, fsdp=training_args.fsdp)
-            speech_encoder = model.get_speech_encoder()
-            speech_encoder.to(dtype=torch.bfloat16 if training_args.bf16 else torch.float16, device=training_args.device)
-            
-        # speech generator
-        if model_args.speech_generator is not None:
-            model.get_model().initialize_speech_generator(model_args=model_args)
-            speech_generator = model.get_speech_generator()
-            speech_generator.to(dtype=torch.bfloat16 if training_args.bf16 else torch.float16, device=training_args.device)
-        
+
         ### Deciding train which part of the model
         if model_args.mm_tunable_parts is None:  # traditional way of deciding which part to train
             model.config.tune_mm_mlp_adapter = training_args.tune_mm_mlp_adapter = model_args.tune_mm_mlp_adapter
@@ -1884,11 +1669,6 @@ def train(attn_implementation=None):
             vision_tower.requires_grad_(False)
             model.get_model().mm_projector.requires_grad_(False)
             model.get_model().vision_resampler.requires_grad_(False)
-            if model_args.speech_encoder is not None:
-                speech_encoder.requires_grad_(False)
-                model.get_model().speech_projector.requires_grad_(False)
-            if model_args.speech_generator is not None:
-                speech_generator.requires_grad_(False)
             # Parse the mm_tunable_parts to decide which parts to unfreeze
             tunable_parts = model_args.mm_tunable_parts.split(",")
             if "mm_mlp_adapter" in tunable_parts:
@@ -1901,20 +1681,9 @@ def train(attn_implementation=None):
                 for name, param in model.named_parameters():
                     if "vision_tower" in name:
                         param.requires_grad_(True)
-            if "speech_encoder" in tunable_parts:
-                for name, param in model.named_parameters():
-                    if "speech_encoder" in name:
-                        param.requires_grad_(True)
-            if "speech_projector" in tunable_parts:
-                for p in model.get_model().speech_projector.parameters():
-                    p.requires_grad = True
             if "mm_language_model" in tunable_parts:
                 for name, param in model.named_parameters():
-                    if "vision_tower" not in name and "mm_projector" not in name and "vision_resampler" not in name and "speech_encoder" not in name and "speech_projector" not in name and 'speech_generator' not in name:
-                        param.requires_grad_(True)
-            if "speech_generator" in tunable_parts:
-                for name, param in model.named_parameters():
-                    if "speech_generator" in name:
+                    if "vision_tower" not in name and "mm_projector" not in name and "vision_resampler" not in name:
                         param.requires_grad_(True)
 
         total_params = sum(p.ds_numel if hasattr(p, "ds_numel") else p.numel() for p in model.parameters())
@@ -1930,10 +1699,25 @@ def train(attn_implementation=None):
         training_args.use_im_start_end = model_args.mm_use_im_start_end
         model.config.mm_use_im_patch_token = model_args.mm_use_im_patch_token
         model.initialize_vision_tokenizer(model_args, tokenizer=tokenizer)
-        
-        if model_args.speech_encoder is not None:
-            model.config.speech_normalize = training_args.speech_normalize
-            model.config.speech_projector_lr = training_args.speech_projector_lr
+
+        if ref_model is not None:
+            ref_model.get_model().initialize_vision_modules(model_args=model_args, fsdp=training_args.fsdp)
+            ref_vision_tower = ref_model.get_vision_tower()
+            ref_vision_tower.to(dtype=torch.bfloat16 if training_args.bf16 else torch.float16, device=training_args.device)
+            ref_model.config.image_aspect_ratio = data_args.image_aspect_ratio
+            ref_model.config.image_grid_pinpoints = data_args.image_grid_pinpoints
+            ref_model.config.image_crop_resolution = data_args.image_crop_resolution
+            ref_model.config.image_split_resolution = data_args.image_split_resolution
+            ref_model.config.tokenizer_padding_side = tokenizer.padding_side
+            ref_model.config.tokenizer_model_max_length = tokenizer.model_max_length
+            ref_model.config.mm_use_im_start_end = data_args.mm_use_im_start_end
+            ref_model.config.mm_use_im_patch_token = model_args.mm_use_im_patch_token
+            ref_model.initialize_vision_tokenizer(model_args, tokenizer=tokenizer)
+            parameter_names = [n for n, _ in ref_model.named_parameters()]
+            for param_name in parameter_names:
+                param = ref_model.get_parameter(param_name)
+                param.requires_grad = False
+            ref_model.eval()
 
     if training_args.bits in [4, 8]:
         from peft.tuners.lora import LoraLayer
@@ -1949,8 +1733,28 @@ def train(attn_implementation=None):
                     if training_args.bf16 and module.weight.dtype == torch.float32:
                         module = module.to(torch.bfloat16)
 
-    data_module = make_supervised_data_module(tokenizer=tokenizer, data_args=data_args)
-    trainer = LLaVATrainer(model=model, tokenizer=tokenizer, args=training_args, **data_module)
+    train_dataset = make_dpo_data_module(tokenizer=tokenizer, data_args=data_args)
+    data_collator = DPODataCollator(
+        tokenizer,
+        label_pad_token_id=IGNORE_INDEX,
+        pad_token_id=tokenizer.pad_token_id,
+    )
+
+    trainer = LLaVADPOTrainer(
+        model,
+        ref_model,
+        args=training_args,
+        dpo_alpha=training_args.dpo_alpha,
+        beta=training_args.beta,
+        gamma=training_args.gamma,
+        train_dataset=train_dataset,
+        eval_dataset=None,
+        data_collator=data_collator,
+        tokenizer=tokenizer,
+        max_length=training_args.model_max_length,
+        generate_during_eval=False,  # training_args.generate_during_eval,
+        precompute_ref_log_probs=training_args.precompute_ref_log_probs,
+    )
 
     if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
         trainer.train(resume_from_checkpoint=True)

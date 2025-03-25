@@ -21,11 +21,11 @@ from transformers.cache_utils import (
 logger = transformers.logging.get_logger('liveinfer')
 
 
-from open_gpt4o.conversation import conv_templates, SeparatorStyle
-from open_gpt4o.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN
-from open_gpt4o.mm_utils import get_model_name_from_path, process_images, tokenizer_image_token, KeywordsStoppingCriteria
-from open_gpt4o.vid_utils import load_video
-from open_gpt4o.model.builder import load_pretrained_model
+from open_omni.conversation import conv_templates, SeparatorStyle
+from open_omni.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN
+from open_omni.mm_utils import get_model_name_from_path, process_images, tokenizer_image_token, KeywordsStoppingCriteria
+from open_omni.vid_utils import load_video
+from open_omni.model.builder import load_pretrained_model
 from .arguments_live import parse_args
 from .inference_util import MaxHeapDict
 

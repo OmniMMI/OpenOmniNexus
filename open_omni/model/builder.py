@@ -19,11 +19,11 @@ import shutil
 
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig, BitsAndBytesConfig
-from open_gpt4o.model import *
-from open_gpt4o.constants import DEFAULT_IMAGE_PATCH_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
-from open_gpt4o.utils import rank0_print
-from open_gpt4o.model.speech_encoder.builder import build_speech_encoder
-from open_gpt4o.model.speech_projector.builder import  build_speech_projector
+from open_omni.model import *
+from open_omni.constants import DEFAULT_IMAGE_PATCH_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
+from open_omni.utils import rank0_print
+from open_omni.model.speech_encoder.builder import build_speech_encoder
+from open_omni.model.speech_projector.builder import  build_speech_projector
 
 
 def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, load_4bit=False, device_map="auto", attn_implementation="flash_attention_2", customized_config=None, overwrite_config=None, **kwargs):
@@ -51,7 +51,7 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
     else:
         is_multimodal = False
 
-    if "llava" in model_name.lower() or "longva" in model_name.lower() or "opengpt4o" in model_name.lower() or is_multimodal:
+    if "llava" in model_name.lower() or "longva" in model_name.lower() or "openomni" in model_name.lower() or is_multimodal:
         # Load LLaVA model
         if "lora" in model_name.lower() and model_base is None:
             warnings.warn(
@@ -68,7 +68,7 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
                 tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=False)
                 model = LlavaMixtralForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, config=lora_cfg_pretrained, attn_implementation=attn_implementation, **kwargs)
             elif "mistral" in model_name.lower():
-                from open_gpt4o.model.language_model.llava_mistral import LlavaMistralConfig
+                from open_omni.model.language_model.llava_mistral import LlavaMistralConfig
 
                 lora_cfg_pretrained = LlavaMistralConfig.from_pretrained(model_path)
                 tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=False)
@@ -80,7 +80,7 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
                 tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=False)
                 model = LlavaGemmaForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, config=lora_cfg_pretrained, attn_implementation=attn_implementation, **kwargs)
             else:
-                from open_gpt4o.model.language_model.llava_llama import LlavaConfig
+                from open_omni.model.language_model.llava_llama import LlavaConfig
 
                 lora_cfg_pretrained = LlavaConfig.from_pretrained(model_path)
                 tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=False)
@@ -138,7 +138,7 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
                 or "llava-v1.6-34b" in model_name.lower()
                 or "llava-v1.5" in model_name.lower()
             ):
-                from open_gpt4o.model.language_model.llava_llama import LlavaConfig
+                from open_omni.model.language_model.llava_llama import LlavaConfig
 
                 tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=False)
                 if customized_config is None:
@@ -188,7 +188,7 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
                 or "llava-v1.6-34b" in model_name.lower()
                 or "llava-v1.5" in model_name.lower()
             ):
-                from open_gpt4o.model.language_model.llava_llama import LlavaConfig
+                from open_omni.model.language_model.llava_llama import LlavaConfig
 
                 tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=False)
                 if customized_config is None:
@@ -208,7 +208,7 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
             elif "qwen" in model_name.lower() or "quyen" in model_name.lower():
                 
                 if 's2s' in model_name.lower():
-                    from open_gpt4o.model.language_model.llava_s2s_qwen import LlavaS2SQwenConfig
+                    from open_omni.model.language_model.llava_s2s_qwen import LlavaS2SQwenConfig
                     tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=False)
                     if overwrite_config is not None:
                         llava_s2s_cfg = LlavaS2SQwenConfig.from_pretrained(model_path)
@@ -220,7 +220,7 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
                         model = LlavaS2SQwenForCausalLM.from_pretrained(model_path, low_cpu_mem_usage=True, attn_implementation=attn_implementation, **kwargs)
                 else:
                 
-                    from open_gpt4o.model.language_model.llava_qwen import LlavaQwenConfig
+                    from open_omni.model.language_model.llava_qwen import LlavaQwenConfig
 
                     tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=False)
                     if overwrite_config is not None:
@@ -238,7 +238,7 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
                 model = LlavaGemmaForCausalLM.from_pretrained(model_path, low_cpu_mem_usage=True, config=cfg_pretrained, attn_implementation=attn_implementation, **kwargs)
             else:
                 try:
-                    from open_gpt4o.model.language_model.llava_llama import LlavaConfig
+                    from open_omni.model.language_model.llava_llama import LlavaConfig
 
                     tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=False)
                     if customized_config is None:
@@ -277,7 +277,7 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
     rank0_print(f"Model Class: {model.__class__.__name__}")
     image_processor = None
 
-    if "llava" in model_name.lower() or "longva" in model_name.lower() or "opengpt4o" in model_name.lower() or is_multimodal:
+    if "llava" in model_name.lower() or "longva" in model_name.lower() or "openomni" in model_name.lower() or is_multimodal:
         mm_use_im_start_end = getattr(model.config, "mm_use_im_start_end", False)
         mm_use_im_patch_token = getattr(model.config, "mm_use_im_patch_token", True)
         if mm_use_im_patch_token:
