@@ -360,11 +360,12 @@ python -m local_demo.model_worker --host 0.0.0.0 --controller http://localhost:1
 4. Visit [http://localhost:8000/](http://localhost:8000/)
 
 
-<center>
-  <video width="400" height="auto" controls>
-    <source src="assets/gradio_demo.mov" type="video/mp4">
-  </video>
-</center>
+
+
+https://github.com/user-attachments/assets/cc06406e-592b-4701-8780-d38a21613eee
+
+
+
 
 ## Roadmap
 
