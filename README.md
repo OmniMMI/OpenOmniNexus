@@ -241,7 +241,7 @@ As a result, you can flexibly enhance your model to progressively approach an om
 
 ### CLI Inference
 
-We demonstrate a usage example for our [OpenOmni-8B-Qwen2-Omni](https://huggingface.co/ColorfulAI/OpenOmni-8B-Llama3-Omni) model, which is fine-tuned from LongVA using VoiceAssistant (100K) for 4 epochs.
+We demonstrate a usage example for our [OpenOmni-7B-Qwen2-Omni](https://huggingface.co/ColorfulAI/OpenOmni-7B-Qwen2-Omni) model, which is fine-tuned from LongVA using VoiceAssistant (100K) for 4 epochs.
 
 ```python
 import os
@@ -360,11 +360,11 @@ python -m local_demo.model_worker --host 0.0.0.0 --controller http://localhost:1
 4. Visit [http://localhost:8000/](http://localhost:8000/)
 
 
-<div style="display: flex; justify-content: center;">
-  <video width="720" height="auto" controls>
+<center>
+  <video width="400" height="auto" controls>
     <source src="assets/gradio_demo.mov" type="video/mp4">
   </video>
-</div>
+</center>
 
 ## Roadmap
 
