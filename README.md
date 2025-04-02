@@ -18,8 +18,8 @@
 
 <!-- ![image](assets/open_omni.png) -->
 
-<!-- > [!IMPORTANT]
->  -->
+> [!IMPORTANT]
+> The provided checkpoints are undertrained and lack visual-auditory alignment, resulting in unpredictable issues in certain cases.
 
 ## Updates
 
@@ -86,7 +86,7 @@ You can sample a portion of these datasets or collect more data based on your co
 **Data preprocess**:
 
 - Install [CosyVoice](https://github.com/FunAudioLLM/CosyVoice) or [ChatTTS](https://github.com/2noise/ChatTTS), for speech synthesis and test speech generation. If you are interested in the process of the speech instruction synthesis, you can refer to the scripts in `preprocess/tts`
-- Download [mHuBERT](https://dl.fbaipublicfiles.com/hubert/mhubert_base_vp_en_es_fr_it3.pt) and [K-means Model](https://dl.fbaipublicfiles.com/hubert/mhubert_base_vp_en_es_fr_it3_L11_km1000.bin) to `checkpoints/quantizer` for speech units generation. You can refer to the scripts in `preprocess/quantize` for the speech unit generation process.
+- Download [mHuBERT](https://dl.fbaipublicfiles.com/hubert/mhubert_base_vp_en_es_fr_it3.pt) and [K-means Model](https://dl.fbaipublicfiles.com/hubert/mhubert_base_vp_en_es_fr_it3_L11_km1000.bin) to `checkpoints/quantizer` for speech units generation. You can refer to the scripts in `preprocess/quantize` for the speech unit generation process. We provide processed samples from VoiceAssistant for convenience, check it [![Dataset](https://img.shields.io/badge/%F0%9F%A4%97Dataset-VoiceAssistant--units-yellow)](https://huggingface.co/datasets/ColorfulAI/VoiceAssistant_units)
 
 *optional:* In addition, to assist with visual-audio instruction tuning, we convert user queries from [LLaVA-NeXT](https://github.com/LLaVA-VL/LLaVA-NeXT) into audio using [CosyVoice](https://github.com/FunAudioLLM/CosyVoice). If you are interested in the process of the construction of audio instruction, you can refer to the scripts in `preprocess/tts`.
 
