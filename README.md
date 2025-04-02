@@ -163,6 +163,8 @@ Place them in the `open_omni/checkpoints` directory.
 ```
 open_omni/checkpoints  
     ├── Qwen2-7B-Instruct
+    ├── Meta-Llama-3.1-8B-Instruct
+    ├── clip-vit-large-patch14-336
     ├── whisper/large-v3.pt
     └── vocoder
         ├── config.json
