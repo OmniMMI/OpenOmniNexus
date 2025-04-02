@@ -244,7 +244,7 @@ As a result, you can flexibly enhance your model to progressively approach an om
 
 ### CLI Inference
 
-We demonstrate a usage example for our [OpenOmni-7B-Qwen2-Omni](https://huggingface.co/ColorfulAI/OpenOmni-7B-Qwen2-Omni) model, which is fine-tuned from LongVA using VoiceAssistant (100K) for 4 epochs.
+We demonstrate a usage example for our [OpenOmni-7B-Qwen2-Omni](https://huggingface.co/ColorfulAI/OpenOmni-7B-Qwen2-Omni) model, which is fine-tuned from LongVA using VoiceAssistant (100K).
 
 ```python
 import os
