@@ -4,12 +4,15 @@
             <img alt="Build" src="http://img.shields.io/badge/cs.CV-arXiv%3Axxxx.xxxxx-B31B1B.svg">
     </a>
     <br> -->
-    <a href="https://huggingface.co/ColorfulAI/OpenOmni-8B-Llama3-Omni">
+    <a href="https://huggingface.co/collections/ColorfulAI/open-omni-nexus-67ebf151b585c14129122d14">
+        <img alt="Build" src="https://img.shields.io/badge/🤗 Collections-Open--Omni--Nexus-yellow">
+    </a>
+    <!-- <a href="https://huggingface.co/ColorfulAI/OpenOmni-8B-Llama3-Omni">
         <img alt="Build" src="https://img.shields.io/badge/🤗 Model-OpenOmni--8B--Llama3-yellow">
     </a>
     <a href="https://huggingface.co/ColorfulAI/OpenOmni-7B-Qwen2-Omni">
         <img alt="Build" src="https://img.shields.io/badge/🤗 Model-OpenOmni--7B--Qwen2-yellow">
-    </a>
+    </a> -->
     <br>
     <br>
     <img src="assets/open_omni.png" alt="Open Omni" width="400" height="auto">
@@ -19,7 +22,7 @@
 <!-- ![image](assets/open_omni.png) -->
 
 > [!IMPORTANT]
-> The provided checkpoints are undertrained and lack visual-auditory alignment, resulting in unpredictable issues in certain cases.
+> The currently available checkpoints are undertrained and lack visual-auditory alignment data due to source constraints, which may lead to unpredictable behavior in some cases
 
 ## Updates
 
@@ -351,6 +354,8 @@ python -m local_demo.controller --host 0.0.0.0 --port 10000
 ```shell
 python -m local_demo.gradio_web_server --controller http://localhost:10000 --port 8000 --model-list-mode reload --vocoder checkpoints/vocoder/g_00500000 --vocoder-cfg checkpoints/vocoder/config.json
 ```
+
+**NOTE:** for llama models change `template_name` from `qwen_1_5` to `llava_llama_3` in `Line 115` in  `local_demo/gradio_web_server.py`
 
 3. Launch a model worker.
 ```shell
