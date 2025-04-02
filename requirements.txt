@@ -15,6 +15,6 @@ seaborn
 pandas
 pytest
 loguru
-gradio==4.29.0
+gradio==4.43.0
 openai-whisper
 tensorboard

@@ -28,6 +28,7 @@ backups
 samples
 scripts_debug
 asset
+response
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

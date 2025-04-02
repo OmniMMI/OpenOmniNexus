@@ -33,7 +33,7 @@ VISION_MODEL_VERSION_CLEAN="${VISION_MODEL_VERSION//\//_}"
 SPEECH_MODEL_VERSION="checkpoints/whisper/large-v3.pt"
 # SPEECH_MODEL_VERSION="checkpoints/whisper/whisper-large-v3"
 SPEECH_MODEL_VERSION_CLEAN="whisper-large"
-SPEECH_GENERATOR_VERSION="CTC"
+SPEECH_GENERATOR_TYPE="ctc"
 
 PROMPT_VERSION=qwen_1_5
 
@@ -59,7 +59,8 @@ ACCELERATE_CPU_AFFINITY=1 torchrun --nproc_per_node="${NUM_GPUS}" --master_port=
     --mm_vision_tower_lr=2e-6 \
     --vision_tower ${VISION_MODEL_VERSION} \
     --speech_encoder ${SPEECH_MODEL_VERSION} \
-    --speech_generator ${SPEECH_GENERATOR_VERSION} \
+    --speech_generator_type ${SPEECH_GENERATOR_TYPE} \
+    --ctc_upsample_factor 20 \
     --mm_projector_type mlp2x_gelu \
     --mm_vision_select_layer -2 \
     --speech_projector_type linear \

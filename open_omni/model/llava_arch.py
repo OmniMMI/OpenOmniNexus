@@ -232,12 +232,14 @@ class LlavaMetaForCausalLM(ABC):
         image_feature = image_feature.view(num_frames, height, width, -1)
         image_feature = image_feature.permute(0, 3, 1, 2).contiguous()
         # image_feature = nn.functional.max_pool2d(image_feature, self.config.mm_spatial_pool_stride)
-        if self.config.mm_spatial_pool_mode == "average":
-            image_feature = nn.functional.avg_pool2d(image_feature, self.config.mm_spatial_pool_stride)
-        elif self.config.mm_spatial_pool_mode == "max":
-            image_feature = nn.functional.max_pool2d(image_feature, self.config.mm_spatial_pool_stride)
+        mm_spatial_pool_mode = getattr(self.config, "mm_spatial_pool_mode", "average")
+        mm_spatial_pool_stride = getattr(self.config, "mm_spatial_pool_stride", 2)
+        if mm_spatial_pool_mode == "average":
+            image_feature = nn.functional.avg_pool2d(image_feature, mm_spatial_pool_stride)
+        elif mm_spatial_pool_mode == "max":
+            image_feature = nn.functional.max_pool2d(image_feature, mm_spatial_pool_stride)
         else:
-            raise ValueError(f"Unexpected mm_spatial_pool_mode: {self.config.mm_spatial_pool_mode}")
+            raise ValueError(f"Unexpected mm_spatial_pool_mode: {mm_spatial_pool_mode}")
         image_feature = image_feature.permute(0, 2, 3, 1)
         image_feature = image_feature.view(num_frames, -1, num_dim)
         return image_feature
@@ -641,21 +643,8 @@ class LlavaMetaForCausalLM(ABC):
         
         # preprocess <speech>
         speech_features = self.encode_speech(speeches, speech_lengths)
-        speech_features = [speech_feature.to(dtype=image_features[0].dtype) for speech_feature in speech_features]
-        # print("debug*"*30)
-        # print(image_features[0].shape)
-        # print(len(image_features))
-        # # print(speeches.shape)
-        # # print(speech_features[0].shape)
-        # # print(speech_lengths)
-        # print(speech_features[0].shape)
-        # print(len(speech_features))
-        # print("debug*"*30)
+        # speech_features = [speech_feature.to(dtype=image_features[0].dtype) for speech_feature in speech_features]
         
-        # print("inputs*"*20)
-        # print(input_ids)
-        # print(labels)
-        # print("inputs*"*20)
         
         _labels = labels
         _position_ids = position_ids
@@ -727,7 +716,7 @@ class LlavaMetaForCausalLM(ABC):
                     cur_new_labels.append(torch.full((cur_image_features.shape[0],), IGNORE_INDEX, device=cur_labels.device, dtype=cur_labels.dtype))
                 
                 elif index in speech_token_indices:
-                    cur_speech_features = speech_features[cur_speech_idx]
+                    cur_speech_features = speech_features[cur_speech_idx].to(cur_input_embeds.dtype)
                     cur_speech_idx += 1
                     cur_new_input_embeds.append(cur_speech_features)
                     cur_new_labels.append(torch.full((cur_speech_features.shape[0],), IGNORE_INDEX, device=cur_labels.device, dtype=cur_labels.dtype))
@@ -780,7 +769,6 @@ class LlavaMetaForCausalLM(ABC):
                     position_ids[i, :cur_len] = torch.arange(0, cur_len, dtype=position_ids.dtype, device=position_ids.device)
 
         new_input_embeds = torch.stack(new_input_embeds_padded, dim=0)
-        
         
 
         if _labels is None:

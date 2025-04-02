@@ -113,7 +113,8 @@ class LlavaS2SQwenForCausalLM(LlavaQwenForCausalLM, GenerationWithCTC):
                         return_dict=return_dict,
                     )
                 
-                loss = self.model.speech_generator(output["hidden_states"][-1], labels, tgt_units)
+                loss = self.model.speech_generator(output["hidden_states"][-1][..., :-1, :].contiguous(), labels[..., 1:].contiguous(), tgt_units)
+                # loss = self.model.speech_generator(output["hidden_states"][-1], labels, tgt_units)
                 
             else:
                 output = super(LlavaQwenForCausalLM, self).forward(
@@ -129,8 +130,11 @@ class LlavaS2SQwenForCausalLM(LlavaQwenForCausalLM, GenerationWithCTC):
                     return_dict=return_dict,
                 )
                 lm_loss = output.loss
-                ctc_loss = self.model.speech_generator(output["hidden_states"][-1], labels, tgt_units)
-                loss = lm_loss + ctc_loss * self.config.ctc_loss_weight
+                if tgt_units is not None:
+                    ctc_loss = self.model.speech_generator(output["hidden_states"][-1], labels, tgt_units)
+                    loss = lm_loss + ctc_loss * self.config.ctc_loss_weight
+                else:
+                    loss = lm_loss
                 
             return CausalLMOutputWithPast(
                 loss=loss,
@@ -170,7 +174,7 @@ class LlavaS2SQwenForCausalLM(LlavaQwenForCausalLM, GenerationWithCTC):
         if "inputs_embeds" in kwargs:
             raise NotImplementedError("`inputs_embeds` is not supported")
 
-        if images is not None:
+        if images is not None or speeches is not None:
             if speeches is None:
                 (inputs, position_ids, attention_mask, _, inputs_embeds, _) = self.prepare_inputs_labels_for_multimodal(inputs, position_ids, attention_mask, None, None, images, modalities, image_sizes=image_sizes)
             else:
@@ -190,294 +194,11 @@ class LlavaS2SQwenForCausalLM(LlavaQwenForCausalLM, GenerationWithCTC):
         )
         hidden_states = outputs["hidden_states"]
         hidden_states = torch.cat([hidden_states[0][-1][:, -1:, :]] + [hidden_states[i][-1] for i in range(1, len(hidden_states))], dim=1)
-        print("*"*50)
-        print(hidden_states.shape)
-        print("*"*50)
         ctc_pred = self.model.speech_generator.predict(hidden_states.squeeze(0))
+        
+        
+        
         return outputs.sequences, ctc_pred
-    
-    @torch.no_grad()
-    def generate_parallel(
-        self,
-        inputs: Optional[torch.Tensor] = None,
-        images: Optional[torch.Tensor] = None,
-        image_sizes: Optional[torch.Tensor] = None,
-        modalities: Optional[List[str]] = ["image"],
-        speeches: Optional[torch.FloatTensor] = None,
-        speech_lengths: Optional[List[List[int]]] = None,
-        **kwargs,
-    ) -> Union[GenerateOutput, torch.LongTensor]:
-        streamer = kwargs.pop("streamer", None)
-        tokenizer = kwargs.pop("tokenizer", None)
-        position_ids = kwargs.pop("position_ids", None)
-        attention_mask = kwargs.pop("attention_mask", None)
-        if "inputs_embeds" in kwargs:
-            raise NotImplementedError("`inputs_embeds` is not supported")
-
-        if images is not None:
-            if speeches is None:
-                (inputs, position_ids, attention_mask, _, inputs_embeds, _) = self.prepare_inputs_labels_for_multimodal(inputs, position_ids, attention_mask, None, None, images, modalities, image_sizes=image_sizes)
-            else:
-                (inputs, position_ids, attention_mask, _, inputs_embeds, _) = self.prepare_inputs_labels_for_multimodal_av(inputs, position_ids, attention_mask, None, None, images, modalities, image_sizes=image_sizes, speeches=speeches, speech_lengths=speech_lengths)
-        else:
-            inputs_embeds = self.get_model().embed_tokens(inputs)
-        
-        new_query = kwargs.pop("new_query", None)
-        new_query_str = kwargs.pop("new_query_str", None)
-        query_str = kwargs.pop("query_str", None)
-        new_query_pos = kwargs.pop("new_query_pos", 0)
-        new_speeches = kwargs.pop("new_speeches", None)
-        new_speech_lengths = kwargs.pop("new_speech_lengths", None)
-        if query_str is not None:
-            query_str = query_str.split("<image>\n")[-1]
-            print(f"Human: {query_str}")
-        if new_query is not None or new_speeches is not None:
-            if new_speeches is not None:
-                # HACK batch_size = 1
-                assert new_query.shape[0] == 1
-                speech_token_indice = torch.where(new_query[0] == SPEECH_TOKEN_INDEX)[0].tolist()[0]
-                new_inputs_embeds_1 = self.get_model().embed_tokens(new_query[:,:speech_token_indice])
-                new_inputs_embeds_2 = self.get_model().embed_tokens(new_query[:,speech_token_indice+1:])
-                speech_features = self.encode_speech(new_speeches, new_speech_lengths)
-                speech_features = [speech_feature.to(dtype=new_inputs_embeds_1.dtype) for speech_feature in speech_features]
-                speech_features = torch.stack(speech_features)
-                new_inputs_embeds = torch.cat([new_inputs_embeds_1, speech_features, new_inputs_embeds_2], dim=1)
-                
-            else:
-                new_inputs_embeds = self.get_model().embed_tokens(new_query)
-        else:
-            new_inputs_embeds = None
-        bsz, seq = inputs_embeds.shape[:-1]
-
-        # get channel ids 10: system; 14: 13: system+template
-        prefix_length = 13 + 32 * 144 + 1 # system + video # prefix prompt + frame
-        channel = [0] * prefix_length + [1] * (seq - prefix_length)
-        # # construct new attention masks by flexattention
-        def prefix_mask(b, h, q_idx, kv_idx):
-            return kv_idx <= prefix_length
-        def causal_mask(b, h, q_idx, kv_idx):
-            return q_idx >= kv_idx
-        def transition_attention_mask(b, h, q_idx, kv_idx):
-            prefix_mask = kv_idx <= prefix_length
-            causal_mask = q_idx >= kv_idx
-            channel_tensor = torch.tensor(channel, dtype=torch.long, device=new_inputs_embeds.device)
-            block_mask = channel_tensor[q_idx] == channel_tensor[kv_idx]
-            return (prefix_mask | block_mask) & causal_mask
-
-        
-        past_key_values = DynamicCache()
-        max_cache_length = past_key_values.get_max_length()
-        cache_position = torch.arange(seq, dtype=torch.int64, device=inputs_embeds.device)
-        max_new_tokens = kwargs.pop("max_new_tokens", 1024)
-        for idx in range(max_new_tokens):
-            
-            # discern noise
-            if idx == new_query_pos:
-                start_time = time.time()
-                print()
-                if new_query_str is not None:
-                    print(f"Human: {new_query_str}")
-                else:
-                    print(f"Human: <new query>")
-                # # encounter new query 
-                # new_attention_mask = create_mask(transition_attention_mask, 1, 1, bsz, seq)
-                
-                # outputs_ids = torch.cat([outputs_ids, new_query], dim=-1)
-                
-                ori_length = attention_mask.shape[1]
-                
-                # # (1) naive mask: mask previous input query
-                # attention_mask[:, prefix_length:] = 0 # mask prev attention
-                # cur_length = attention_mask.shape[1] - prefix_length
-                # # print(attention_mask.shape)
-                # attention_mask = torch.cat([attention_mask[:,:-1], attention_mask.new_ones((new_inputs_embeds.shape[0], new_inputs_embeds.shape[1]))], dim=-1)
-                # (2) parallel mask
-                seq = ori_length + new_inputs_embeds.shape[1]
-                channel += [channel[-1]+1] * new_inputs_embeds.shape[1]
-                dtype_min = torch.finfo(new_inputs_embeds.dtype).min
-                
-                # # 1. flexattention
-                # attention_mask_4d = create_mask(transition_attention_mask, 1, 1, seq, seq)
-                # attention_mask_4d = attention_mask_4d[:, :, -new_inputs_embeds.shape[1]:, :]
-                # attention_mask_4d = torch.where(attention_mask_4d, torch.tensor(0.0, device=new_inputs_embeds.device, dtype=new_inputs_embeds.dtype), torch.tensor(dtype_min, device=new_inputs_embeds.device, dtype=new_inputs_embeds.dtype))
-                # 2. torch implementation
-                attention_mask_4d = transition_attention_mask_pt(1, 1, list(range(seq)), list(range(seq)), prefix_length, channel, new_inputs_embeds.device).unsqueeze(0).unsqueeze(0)
-                attention_mask_4d = attention_mask_4d[:, :, -new_inputs_embeds.shape[1]-1:, :]
-                
-                
-                attention_mask_4d = torch.where(
-                    attention_mask_4d,
-                    torch.tensor(0.0, device=new_inputs_embeds.device, dtype=new_inputs_embeds.dtype),
-                    torch.tensor(dtype_min, device=new_inputs_embeds.device, dtype=new_inputs_embeds.dtype)
-                )
-                # attention_mask_4d = torch.where(attention_mask_4d, torch.tensor(0.0, device=new_inputs_embeds.device, dtype=new_inputs_embeds.dtype), torch.tensor(dtype_min, device=new_inputs_embeds.device, dtype=new_inputs_embeds.dtype))
-                
-                cache_position = torch.arange(cache_position[-1], cache_position[-1]+new_inputs_embeds.shape[1]+1, dtype=torch.int64, device=inputs_embeds.device)
-                
-                # print("*"*24)
-                # print(new_inputs_embeds.shape)
-                # print(attention_mask_4d.shape)
-                # print("*"*24)
-                
-                outputs = super().forward(
-                    attention_mask=attention_mask_4d,
-                    past_key_values=past_key_values,
-                    cache_position=cache_position,
-                    inputs_embeds=torch.cat([inputs_embeds, new_inputs_embeds],dim=1),
-                    use_cache=True,
-                )
-                
-                
-                
-                temperature = 1
-                next_prob = torch.softmax(outputs.logits[:,-1]/temperature, dim=-1)
-                next_entropy = -torch.sum(next_prob*torch.log(next_prob+1e-5), dim=-1)
-                next_threshold = 0.09
-                next_alpha = 0.3
-                noise_threshold = torch.minimum(
-                    torch.ones_like(next_entropy) * next_threshold,
-                    torch.exp(-next_entropy) * next_alpha
-                )
-                noise_prob = next_prob[:, 151644] # |<im_start>|
-                # HACK batchsize must be 1
-                if noise_prob[0] > noise_threshold[0]:
-                    print("Assistant: ", end='', flush=True)
-                    # # (1) naive mask: if noise: continue generate, give up the query, revert attention
-                    # attention_mask[:, prefix_length:prefix_length+cur_length] = 1 # revert prev attention
-                    # attention_mask[:, prefix_length+cur_length:-1] = 0 # mask noise attention
-                    # attention_mask = torch.cat([attention_mask, attention_mask.new_ones((bsz, 1))], dim=-1)
-                    # cache_position = cache_position[-1:] + 1
-                    # (2) parallel mask: revert mask and crop KVCache
-                    attention_mask = torch.cat([attention_mask, attention_mask.new_ones(bsz, 1)], dim=-1)
-                    past_key_values.crop(ori_length)
-                    cache_position = cache_position[:1] + 1
-                    channel += [channel[-1]-1]
-                    next_token_ids = outputs.logits[:, :1].argmax(-1)
-                    if tokenizer is not None:
-                        print(tokenizer.decode(next_token_ids.squeeze(0), skip_special_tokens=True), end='', flush=True)
-                    outputs_ids = torch.cat([outputs_ids, next_token_ids], dim=-1)
-                    inputs_embeds = self.get_model().embed_tokens(next_token_ids)
-                    
-                    
-                else:
-                    # if not noise: change channel
-                    # print("*******start new topic*******")
-                    print("Assistant: ", end='', flush=True)
-                    next_token_ids = outputs.logits[:, -1:].argmax(-1)
-                    outputs_ids = torch.cat([outputs_ids, next_token_ids], dim=-1)
-                    if tokenizer is not None:
-                        print(tokenizer.decode(next_token_ids.squeeze(0), skip_special_tokens=True), end='', flush=True)
-                    if streamer is not None:
-                        streamer.stream(output_ids=next_token_ids)
-                    inputs_embeds = self.get_model().embed_tokens(next_token_ids)
-                    # # (1) naive mask: 2d mask
-                    # attention_mask = torch.cat([attention_mask, attention_mask.new_ones((bsz, 1))], dim=-1)
-                    # cache_position = cache_position[-1:] + 1
-                    # channel += [channel[-1]]
-                    # (2) paprallel mask for simplicity: mask previous query TODO: consider previous query
-                    attention_mask[:, prefix_length:] = 0 # mask prev attention
-                    attention_mask = torch.cat([attention_mask[:,:-1], attention_mask.new_ones((new_inputs_embeds.shape[0], new_inputs_embeds.shape[1]+1))], dim=-1)
-                    attention_mask = torch.cat([attention_mask, attention_mask.new_ones((bsz, 1))], dim=-1)
-                    cache_position = cache_position[-1:] + 1
-                    channel += [channel[-1]]
-                
-                end_time = time.time()
-                print("new_query inference time: ", end_time-start_time)
-            
-            else:
-                outputs = super().forward(
-                    attention_mask=attention_mask,
-                    past_key_values=past_key_values,
-                    cache_position=cache_position,
-                    inputs_embeds=inputs_embeds,
-                    use_cache=True,
-                )
-                
-                # greedy sample
-                next_token_ids = outputs.logits[:, -1:].argmax(-1)
-                if idx == 0:
-                    outputs_ids = next_token_ids
-                else:
-                    outputs_ids = torch.cat([outputs_ids, next_token_ids], dim=-1)
-                if tokenizer is not None:
-                    if idx == 0: print("Assistant: ", end='', flush=True)
-                    print(tokenizer.decode(next_token_ids.squeeze(0), skip_special_tokens=True), end='', flush=True)
-                if streamer is not None:
-                    streamer.stream(output_ids=next_token_ids)
-                inputs_embeds = self.get_model().embed_tokens(next_token_ids)
-                attention_mask = torch.cat([attention_mask, attention_mask.new_ones((bsz, 1))], dim=-1)
-                cache_position = cache_position[-1:] + 1
-                channel += [channel[-1]]
-                
-            if next_token_ids.squeeze(0)[0].item() == tokenizer.eos_token_id:
-                print()
-                print("="*20,"COMPLETE","="*20)
-                break
-
-        return outputs_ids
-
-
-    @torch.no_grad()
-    def generate_stream(
-        self,
-        inputs: Optional[torch.Tensor] = None,
-        images: Optional[torch.Tensor] = None,
-        image_sizes: Optional[torch.Tensor] = None,
-        modalities: Optional[List[str]] = ["image"],
-        speeches: Optional[torch.FloatTensor] = None,
-        speech_lengths: Optional[List[List[int]]] = None,
-        **kwargs,
-    ) -> Union[GenerateOutput, torch.LongTensor]:
-        position_ids = kwargs.pop("position_ids", None)
-        attention_mask = kwargs.pop("attention_mask", None)
-        tokenizer = kwargs.pop("tokenizer", None)
-        if "inputs_embeds" in kwargs:
-            raise NotImplementedError("`inputs_embeds` is not supported")
-        
-        if images is not None:
-            if speeches is None:
-                (inputs, position_ids, attention_mask, _, inputs_embeds, _) = self.prepare_inputs_labels_for_multimodal(inputs, position_ids, attention_mask, None, None, images, modalities, image_sizes=image_sizes)
-            else:
-                (inputs, position_ids, attention_mask, _, inputs_embeds, _) = self.prepare_inputs_labels_for_multimodal_av(inputs, position_ids, attention_mask, None, None, images, modalities, image_sizes=image_sizes, speeches=speeches, speech_lengths=speech_lengths)
-        else:
-            inputs_embeds = self.get_model().embed_tokens(inputs)
-        
-        bsz, seq = inputs_embeds.shape[:-1]
-        past_key_values = DynamicCache()
-        cache_position = torch.arange(seq, dtype=torch.int64, device=inputs_embeds.device)
-        max_new_tokens = kwargs.pop("max_new_tokens", 1024)
-        for idx in range(max_new_tokens):
-            if idx == 10 or idx == 0: start_time = time.time()
-            outputs = super().forward(
-                attention_mask=attention_mask,
-                past_key_values=past_key_values,
-                cache_position=cache_position,
-                inputs_embeds=inputs_embeds,
-                use_cache=True,
-            )
-            
-            # greedy sample
-            next_token_ids = outputs.logits[:, -1:].argmax(-1)
-            if idx == 0:
-                outputs_ids = next_token_ids
-            else:
-                outputs_ids = torch.cat([outputs_ids, next_token_ids], dim=-1)
-            if tokenizer is not None:
-                if idx == 0: print("Assistant: ", end='', flush=True)
-                print(tokenizer.decode(next_token_ids.squeeze(0), skip_special_tokens=True), end='', flush=True)
-            inputs_embeds = self.get_model().embed_tokens(next_token_ids)
-            attention_mask = torch.cat([attention_mask, attention_mask.new_ones((bsz, 1))], dim=-1)
-            cache_position = cache_position[-1:] + 1
-            
-            if idx == 10 or idx == 0: print("forward time: ", time.time()-start_time)
-            
-            if next_token_ids.squeeze(0)[0].item() == tokenizer.eos_token_id:
-                print()
-                print("="*20,"COMPLETE","="*20)
-                break
-
-        return outputs_ids
-
     
     def prepare_inputs_for_generation(self, input_ids, past_key_values=None, inputs_embeds=None, **kwargs):
         images = kwargs.pop("images", None)

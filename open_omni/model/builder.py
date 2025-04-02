@@ -51,7 +51,7 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
     else:
         is_multimodal = False
 
-    if "llava" in model_name.lower() or "longva" in model_name.lower() or "openomni" in model_name.lower() or is_multimodal:
+    if "llava" in model_name.lower() or "longva" in model_name.lower() or "openomni" in model_name.lower() or "omni" in model_name.lower() or is_multimodal:
         # Load LLaVA model
         if "lora" in model_name.lower() and model_base is None:
             warnings.warn(
@@ -188,22 +188,42 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
                 or "llava-v1.6-34b" in model_name.lower()
                 or "llava-v1.5" in model_name.lower()
             ):
-                from open_omni.model.language_model.llava_llama import LlavaConfig
+                
+                if "s2s" in model_name.lower():
+                    from open_omni.model.language_model.llava_s2s_llama import LlavaS2SLlamaConfig
+                    tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=False)
+                    if customized_config is None:
+                        llava_cfg = LlavaS2SLlamaConfig.from_pretrained(model_path)
+                        if "v1.5" in model_name.lower():
+                            llava_cfg.delay_load = True  # a workaround for correctly loading v1.5 models
+                    else:
+                        llava_cfg = customized_config
 
-                tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=False)
-                if customized_config is None:
-                    llava_cfg = LlavaConfig.from_pretrained(model_path)
-                    if "v1.5" in model_name.lower():
-                        llava_cfg.delay_load = True  # a workaround for correctly loading v1.5 models
+                    if overwrite_config is not None:
+                        rank0_print(f"Overwriting config with {overwrite_config}")
+                        for k, v in overwrite_config.items():
+                            setattr(llava_cfg, k, v)
+
+                    model = LlavaS2SLlamaForCausalLM.from_pretrained(model_path, low_cpu_mem_usage=True, attn_implementation=attn_implementation, config=llava_cfg, **kwargs)
+                
                 else:
-                    llava_cfg = customized_config
+                
+                    from open_omni.model.language_model.llava_llama import LlavaConfig
 
-                if overwrite_config is not None:
-                    rank0_print(f"Overwriting config with {overwrite_config}")
-                    for k, v in overwrite_config.items():
-                        setattr(llava_cfg, k, v)
+                    tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=False)
+                    if customized_config is None:
+                        llava_cfg = LlavaConfig.from_pretrained(model_path)
+                        if "v1.5" in model_name.lower():
+                            llava_cfg.delay_load = True  # a workaround for correctly loading v1.5 models
+                    else:
+                        llava_cfg = customized_config
 
-                model = LlavaLlamaForCausalLM.from_pretrained(model_path, low_cpu_mem_usage=True, attn_implementation=attn_implementation, config=llava_cfg, **kwargs)
+                    if overwrite_config is not None:
+                        rank0_print(f"Overwriting config with {overwrite_config}")
+                        for k, v in overwrite_config.items():
+                            setattr(llava_cfg, k, v)
+
+                    model = LlavaLlamaForCausalLM.from_pretrained(model_path, low_cpu_mem_usage=True, attn_implementation=attn_implementation, config=llava_cfg, **kwargs)
 
             elif "qwen" in model_name.lower() or "quyen" in model_name.lower():
                 
@@ -277,7 +297,7 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
     rank0_print(f"Model Class: {model.__class__.__name__}")
     image_processor = None
 
-    if "llava" in model_name.lower() or "longva" in model_name.lower() or "openomni" in model_name.lower() or is_multimodal:
+    if "llava" in model_name.lower() or "longva" in model_name.lower() or "openomni" in model_name.lower() or "omni" in model_name.lower() or is_multimodal:
         mm_use_im_start_end = getattr(model.config, "mm_use_im_start_end", False)
         mm_use_im_patch_token = getattr(model.config, "mm_use_im_patch_token", True)
         if mm_use_im_patch_token:
@@ -287,11 +307,12 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
         model.resize_token_embeddings(len(tokenizer))
 
         vision_tower = model.get_vision_tower()
-        if not vision_tower.is_loaded:
-            vision_tower.load_model(device_map=device_map)
-        if device_map != "auto":
-            vision_tower.to(device="cuda", dtype=torch.float16)
-        image_processor = vision_tower.image_processor
+        if vision_tower:
+            if not vision_tower.is_loaded:
+                vision_tower.load_model(device_map=device_map)
+            if device_map != "auto":
+                vision_tower.to(device="cuda", dtype=torch.float16)
+            image_processor = vision_tower.image_processor
         
         # load speech encoder: freeze encoder
         if getattr(model.config, "speech_encoder_type", None) is not None:

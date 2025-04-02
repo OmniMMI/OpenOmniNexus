@@ -108,8 +108,9 @@ class ModelArguments:
     
     speech_generator: Optional[str] = field(default=None)
     speech_generator_type: Optional[str] = field(default="ctc")
-    ctc_decoder_config: Optional[str] = field(default="(2,4096,32,11008)")
-    ctc_upsample_factor: Optional[int] = field(default=25)
+    # ctc_decoder_config: Optional[str] = field(default="(2,4096,32,11008)") # llama
+    ctc_decoder_config: Optional[str] = field(default="(2,3584,28,18944)") # qwen
+    ctc_upsample_factor: Optional[int] = field(default=20)
     ctc_loss_weight: Optional[float] = field(default=1.0)
     unit_vocab_size: Optional[int] = field(default=1000)
     tune_speech_generator_only: Optional[bool] = False
@@ -731,7 +732,10 @@ def preprocess_qwen_av(sources, tokenizer: transformers.PreTrainedTokenizer, has
         input_id, target, tgt_unit = [], [], []
         system = [im_start] + _system + tokenizer(system_message).input_ids + [im_end] + nl_tokens
         input_id += system
-        target += [im_start] + [IGNORE_INDEX] * (len(system) - 3) + [im_end] + nl_tokens
+        if has_units:
+            target += [IGNORE_INDEX] * (len(system) - 1) + [IGNORE_INDEX] * len(nl_tokens)
+        else:
+            target += [im_start] + [IGNORE_INDEX] * (len(system) - 3) + [im_end] + nl_tokens
         assert len(input_id) == len(target)
         for j, sentence in enumerate(source):
             role = roles[sentence["from"]]
@@ -769,9 +773,15 @@ def preprocess_qwen_av(sources, tokenizer: transformers.PreTrainedTokenizer, has
             
             input_id += _input_id
             if role == "<|im_start|>user":
-                _target = [im_start] + [IGNORE_INDEX] * (len(_input_id) - 3) + [im_end] + nl_tokens
+                if has_units:
+                    _target = [IGNORE_INDEX] * (len(_input_id) - 1 + len(nl_tokens))
+                else:
+                    _target = [im_start] + [IGNORE_INDEX] * (len(_input_id) - 3) + [im_end] + nl_tokens
             elif role == "<|im_start|>assistant":
-                _target = [im_start] + [IGNORE_INDEX] * len(tokenizer(role).input_ids) + _input_id[len(tokenizer(role).input_ids) + 1 : -2] + [im_end] + nl_tokens
+                if has_units:
+                    _target = [IGNORE_INDEX] * (len(tokenizer(role).input_ids) + 1) + _input_id[len(tokenizer(role).input_ids) + 1 : -2] + [im_end] +  [IGNORE_INDEX] * len(nl_tokens)
+                else:
+                    _target = [im_start] + [IGNORE_INDEX] * len(tokenizer(role).input_ids) + _input_id[len(tokenizer(role).input_ids) + 1 : -2] + [im_end] + nl_tokens
             else:
                 raise NotImplementedError
             target += _target
@@ -893,6 +903,109 @@ def preprocess_llama3(
         input_ids=input_ids,  # tensor(bs x seq_len)
         labels=targets,  # tensor(bs x seq_len)
     )
+
+def preprocess_llama3_av(
+    sources,
+    tokenizer: transformers.PreTrainedTokenizer,
+    has_image: bool = False,
+    has_units: bool = False,
+    max_len=8192,
+    system_message: str = "You are a helpful language and vision assistant. You are able to understand the visual content that the user provides, and assist the user with a variety of tasks using natural language.",
+) -> Dict:
+    # roles = {"human": "<|start_header_id|>user<|end_header_id|>", "gpt": "<|start_header_id|>assistant<|end_header_id|>"}
+    roles = {"human": "user", "gpt": "assistant"}
+
+    # Add image tokens to tokenizer as a special tokens
+    # Use a deepcopy of tokenizer so that we don't modify on the tokenizer
+    tokenizer = copy.deepcopy(tokenizer)
+    # When there is actually an image, we add the image tokens as a special token
+    if has_image:
+        tokenizer.add_tokens(["<image>"], special_tokens=True)
+        tokenizer.add_tokens(["<speech>"], special_tokens=True)
+    image_token_index = tokenizer.convert_tokens_to_ids("<image>")
+    speech_token_index = tokenizer.convert_tokens_to_ids("<speech>")
+    bos_token_id = tokenizer.convert_tokens_to_ids("<|begin_of_text|>")
+    start_header_id = tokenizer.convert_tokens_to_ids("<|start_header_id|>")
+    end_header_id = tokenizer.convert_tokens_to_ids("<|end_header_id|>")
+    eot_id = tokenizer.convert_tokens_to_ids("<|eot_id|>")
+
+    unmask_tokens = ["<|begin_of_text|>", "<|start_header_id|>", "<|end_header_id|>", "<|eot_id|>", "\n\n"]
+    unmask_tokens_idx = [tokenizer.convert_tokens_to_ids(tok) for tok in unmask_tokens]
+
+    # After update, calling tokenizer of llama3 will
+    # auto add bos id for the tokens. ヽ(｀⌒´)ﾉ
+    def safe_tokenizer_llama3(text):
+        input_ids = tokenizer(text).input_ids
+        if input_ids[0] == bos_token_id:
+            input_ids = input_ids[1:]
+        return input_ids
+
+    nl_tokens = tokenizer.convert_tokens_to_ids("\n\n")
+    # Apply prompt templates
+    input_ids, targets, tgt_units = [], [], []
+    for i, source in enumerate(sources):
+        if roles[source[0]["from"]] != roles["human"]:
+            source = source[1:]
+
+        input_id, target, tgt_unit = [], [], []
+
+        # New version, use apply chat template
+        # Build system message for each sentence
+        input_id += tokenizer.apply_chat_template([{"role" : "system", "content" : system_message}])
+        target += [IGNORE_INDEX] * len(input_id)
+
+        for conv in source:
+            # Make sure llava data can load
+            try:
+                role = conv["role"]
+                content = conv["content"]
+            except:
+                role = conv["from"]
+                content = conv["value"]
+
+            role =  roles.get(role, role)
+            
+            if has_units and "tgt_units" in conv:
+                tgt_unit += conv["tgt_units"]
+            
+            conv = [{"role" : role, "content" : content}]
+            # First is bos token we don't need here
+            encode_id = tokenizer.apply_chat_template(conv)[1:]
+            input_id += encode_id
+            if role in ["user", "system"]:
+                target += [IGNORE_INDEX] * len(encode_id)
+            else:
+                target += encode_id
+        
+
+                    
+        assert len(input_id) == len(target), f"{len(input_id)} != {len(target)}"
+        for idx, encode_id in enumerate(input_id):
+            if encode_id in unmask_tokens_idx and not has_units:
+                target[idx] = encode_id
+            if encode_id == image_token_index:
+                input_id[idx] = IMAGE_TOKEN_INDEX
+            if encode_id == speech_token_index:
+                input_id[idx] = SPEECH_TOKEN_INDEX
+        input_ids.append(input_id)
+        targets.append(target)
+        if has_units:
+            tgt_units.append(tgt_unit)
+    input_ids = torch.tensor(input_ids, dtype=torch.long)
+    targets = torch.tensor(targets, dtype=torch.long)
+    if has_units:
+        tgt_units = torch.tensor(tgt_units, dtype=torch.long)
+        return dict(
+            input_ids=input_ids,  # tensor(bs x seq_len)
+            labels=targets,  # tensor(bs x seq_len)
+            tgt_units=tgt_units
+        )
+    else:
+        return dict(
+            input_ids=input_ids,  # tensor(bs x seq_len)
+            labels=targets,  # tensor(bs x seq_len)
+        )
+
 
 
 def preprocess_v1(sources, tokenizer: transformers.PreTrainedTokenizer, has_image: bool = False) -> Dict:
@@ -1101,7 +1214,8 @@ def preprocess(sources: Sequence[str], tokenizer: transformers.PreTrainedTokeniz
     if conversation_lib.default_conversation.version == "gemma":
         return preprocess_gemma(sources, tokenizer, has_image=has_image)
     if conversation_lib.default_conversation.version == "llama_v3":
-        return preprocess_llama3(sources, tokenizer, has_image=has_image)
+        # return preprocess_llama3(sources, tokenizer, has_image=has_image)
+        return preprocess_llama3_av(sources, tokenizer, has_image=has_image, has_units=has_units)
     # add end signal and concatenate together
     conversations = []
     for source in sources:
@@ -1557,6 +1671,7 @@ def get_model(model_args, training_args, bnb_model_from_pretrained_args):
         overwrite_config["mm_spatial_pool_mode"] = model_args.mm_spatial_pool_mode
 
     if model_args.speech_generator_type is not None:
+        overwrite_config["speech_generator"] = model_args.speech_generator
         overwrite_config["speech_generator_type"] = model_args.speech_generator_type
         overwrite_config["ctc_decoder_config"] = model_args.ctc_decoder_config
         overwrite_config["ctc_upsample_factor"] = model_args.ctc_upsample_factor
@@ -1616,14 +1731,25 @@ def get_model(model_args, training_args, bnb_model_from_pretrained_args):
             or "nous-hermes" in model_args.model_name_or_path.lower()
             and "wizard-2" in model_args.model_name_or_path.lower()
         ):
-            model = LlavaLlamaForCausalLM.from_pretrained(
-                model_args.model_name_or_path,
-                cache_dir=training_args.cache_dir,
-                attn_implementation=training_args.attn_implementation,
-                torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
-                low_cpu_mem_usage=False,
-                **customized_kwargs,
-            )
+            
+            if "s2s" in model_args.model_name_or_path.lower():
+                model = LlavaS2SLlamaForCausalLM.from_pretrained(
+                    model_args.model_name_or_path,
+                    cache_dir=training_args.cache_dir,
+                    attn_implementation=training_args.attn_implementation,
+                    torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
+                    low_cpu_mem_usage=False,
+                    **customized_kwargs,
+                )
+            else:
+                model = LlavaLlamaForCausalLM.from_pretrained(
+                    model_args.model_name_or_path,
+                    cache_dir=training_args.cache_dir,
+                    attn_implementation=training_args.attn_implementation,
+                    torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
+                    low_cpu_mem_usage=False,
+                    **customized_kwargs,
+                )
         elif "qwen" in model_args.model_name_or_path.lower():
             
             if 's2s' in model_args.model_name_or_path.lower():
@@ -1844,7 +1970,7 @@ def train(attn_implementation=None):
             speech_encoder.to(dtype=torch.bfloat16 if training_args.bf16 else torch.float16, device=training_args.device)
             
         # speech generator
-        if model_args.speech_generator is not None:
+        if model_args.speech_generator_type is not None:
             model.get_model().initialize_speech_generator(model_args=model_args)
             speech_generator = model.get_speech_generator()
             speech_generator.to(dtype=torch.bfloat16 if training_args.bf16 else torch.float16, device=training_args.device)

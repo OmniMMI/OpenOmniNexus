@@ -4,7 +4,7 @@ import random
 import torch
 import av
 import cv2
-import imageio
+# import imageio
 import decord
 from decord import VideoReader, cpu
 # decord.bridge.set_bridge('torch')

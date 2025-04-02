@@ -34,11 +34,15 @@ class SpeechGeneratorCTC(nn.Module):
         _config.intermediate_size = n_inter_dims
         _config._attn_implementation = "flash_attention_2"
         self.upsample_factor = config.ctc_upsample_factor
-        self.input_proj = nn.Linear(config.hidden_size, n_dims)
-        self.layers = nn.ModuleList(
-            # [LlamaDecoderLayer(_config, layer_idx) for layer_idx in range(n_layers)]
-            [Qwen2DecoderLayer(_config, layer_idx) for layer_idx in range(n_layers)]
-        )
+        self.input_proj = nn.Linear(_config.hidden_size, n_dims)
+        if n_dims == 4096:
+            self.layers = nn.ModuleList(
+                [LlamaDecoderLayer(_config, layer_idx) for layer_idx in range(n_layers)]
+            )
+        elif n_dims == 3584:
+            self.layers = nn.ModuleList(
+                [Qwen2DecoderLayer(_config, layer_idx) for layer_idx in range(n_layers)]
+            )
         self.unit_vocab_size = config.unit_vocab_size
         self.output_proj = nn.Linear(n_dims, config.unit_vocab_size + 1)
 

@@ -187,28 +187,52 @@ if __name__ == '__main__':
         ckpt_dir=ckpt_dir
     )
     
-    items_path = "../../inputs/text/voiceassistant.json"
+    items_path = "../../inputs/text/VoiceAssistant.json"
+    # items_path = "./VoiceAssistant_pred.json"
     items = json.load(open(items_path))
+    
+    existing_items = json.load(open("VoiceAssistant_units_270K.json"))
+    existing_dict = {d["id"]:d for d in existing_items}
     
     new_items = []
     
     for item in tqdm(items, total=len(items)):
         idx = item["id"]
+        if idx in existing_dict:
+            unit_item = existing_dict[idx]
+            if "tgt_units" in unit_item["conversations"][-1]:
+                new_items.append(unit_item)
+                continue
         if not os.path.exists(f"../../inputs/speech/voiceassistant_response/{idx}_0.wav"): continue
+        # if not os.path.exists(f"../../inputs/speech/voiceassistant_pred/{idx}_0.wav"): continue
+        # if not os.path.exists(f"/data/data/voiceassistant_vits/{idx}_0.wav"): continue
         count = 0
-        for i, convo in enumerate(item["conversations"]):
-            if convo.get("from") == "gpt":
-                audio_filename = f"../../inputs/speech/voiceassistant_response/{idx}_{count}.wav"
+        try:
+            for i, convo in enumerate(item["conversations"]):
+                if convo.get("from") == "gpt":
+                    audio_filename = f"../../inputs/speech/voiceassistant_response/{idx}_{count}.wav"
+                    # audio_filename = f"../../inputs/speech/voiceassistant_pred/{idx}_{count}.wav"
+                    # audio_filename = f"/data/data/voiceassistant_vits/{idx}_{count}.wav"
 
-                units = s2u(audio_filename)["units"]
-                # print(units)
-                # print(type(units))
-                # break
-                convo["tgt_units"] = units
+                    res = s2u(audio_filename)
+                    units = res["units"]
+                    unmerged_units = res["unmerged_units"]
+                    # print(units)
+                    # print(type(units))
+                    # break
+                    convo["tgt_units"] = units
+                    # convo["tgt_units"] = unmerged_units
+                    # convo["unmerged_tgt_units"] = unmerged_units
+        except Exception as e:
+            print(f"Encounter Error: {e}, skip")
+            continue
         # break
         new_items.append(item)
-        
-    json.dump(new_items, open("voiceassistant_units_.json", "w"))
+    
+    # json.dump(new_items, open("VoiceAssistant_units.json", "w"))    
+    # json.dump(new_items, open("VoiceAssistant_units_pred.json", "w"))
+    # json.dump(new_items, open("VoiceAssistant_units_pred_unmerged.json", "w"))
+    json.dump(new_items, open("VoiceAssistant_units_gt_270K.json", "w"))
 
 
     

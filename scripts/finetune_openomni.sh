@@ -2,11 +2,11 @@
 #SBATCH --job-name=openomni
 #SBATCH --partition=HGX,DGX
 #SBATCH --account=research
-#SBATCH --qos=lv0b
-#SBATCH --time=4:00:00
+#SBATCH --qos=lv0a
+#SBATCH --time=8:00:00
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=4
-#SBATCH --gres=gpu:4
+#SBATCH --ntasks-per-node=2
+#SBATCH --gres=gpu:2
 #SBATCH --output=./slurm_logs/finetune-openomni.out
 #SBATCH --error=./slurm_logs/finetune-openomni.error.out
 
@@ -26,20 +26,23 @@ export PORT=$MASTER_PORT
 export PYTHONPATH=$(pwd)
 echo $PYTHONPATH
 
-LLM_VERSION="checkpoints/LongVA-7B-S2S-Qwen2-VoiceAssistant"
+# LLM_VERSION="checkpoints/LongVA-7B-S2S-Qwen2-VoiceAssistant-400K/checkpoint-7000"
+# LLM_VERSION="checkpoints/OpenOmni-7B-S2S-Qwen2-8500"
+LLM_VERSION="checkpoints/OpenOmni-7B-S2S-Qwen2-self-15"
 LLM_VERSION_CLEAN="${LLM_VERSION//\//_}"
 VISION_MODEL_VERSION="checkpoints/clip-vit-large-patch14-336"
 VISION_MODEL_VERSION_CLEAN="${VISION_MODEL_VERSION//\//_}"
 SPEECH_MODEL_VERSION="checkpoints/whisper/large-v3.pt"
 # SPEECH_MODEL_VERSION="checkpoints/whisper/whisper-large-v3"
 SPEECH_MODEL_VERSION_CLEAN="whisper-large"
-SPEECH_GENERATOR_VERSION="CTC"
+# SPEECH_GENERATOR_VERSION="checkpoints/llama_omni_speech_generator/speech_generator_weights.pt"
+SPEECH_GENERATOR_TYPE="ctc"
 
 PROMPT_VERSION=qwen_1_5
 
 BASE_RUN_NAME="llavanext-${VISION_MODEL_VERSION_CLEAN}-${LLM_VERSION_CLEAN}-mlp2x_gelu-pretrain_blip558k_plain"
 echo "BASE_RUN_NAME: ${BASE_RUN_NAME}"
-MID_RUN_NAME="OpenOmni-7B-Qwen2"
+MID_RUN_NAME="OpenOmni-7B-Qwen2-Omni"
 echo "MID_RUN_NAME: ${MID_RUN_NAME}"
 
 CKPT_PATH=$LLM_VERSION # this could also be the previous stage checkpoint
@@ -52,15 +55,16 @@ ACCELERATE_CPU_AFFINITY=1 torchrun --nproc_per_node="${NUM_GPUS}" --master_port=
     --deepspeed scripts/zero2.json \
     --model_name_or_path ${CKPT_PATH} \
     --version ${PROMPT_VERSION} \
-    --data_path inputs/text/voiceassistant_units.json \
+    --data_path inputs/text/VoiceAssistant_units_gt_270K.json \
     --image_folder inputs/images/llava-next \
-    --speech_folder inputs/speech/voiceassistant \
+    --speech_folder inputs/speech/VoiceAssistant \
     --mm_tunable_parts "speech_generator" \
     --tune_speech_generator_only True \
     --mm_vision_tower_lr=2e-6 \
     --vision_tower ${VISION_MODEL_VERSION} \
     --speech_encoder ${SPEECH_MODEL_VERSION} \
-    --speech_generator ${SPEECH_GENERATOR_VERSION} \
+    --speech_generator_type ${SPEECH_GENERATOR_TYPE} \
+    --ctc_upsample_factor 15 \
     --mm_projector_type mlp2x_gelu \
     --mm_vision_select_layer -2 \
     --speech_projector_type linear \
@@ -72,15 +76,15 @@ ACCELERATE_CPU_AFFINITY=1 torchrun --nproc_per_node="${NUM_GPUS}" --master_port=
     --bf16 True \
     --run_name $MID_RUN_NAME \
     --output_dir "checkpoints/${MID_RUN_NAME}" \
-    --num_train_epochs 3 \
-    --per_device_train_batch_size 8 \
+    --num_train_epochs 20 \
+    --per_device_train_batch_size 2 \
     --per_device_eval_batch_size 4 \
-    --gradient_accumulation_steps 4 \
+    --gradient_accumulation_steps 8 \
     --evaluation_strategy "no" \
     --save_strategy "steps" \
     --save_steps 500 \
     --save_total_limit 1 \
-    --learning_rate 2e-5 \
+    --learning_rate 3e-5 \
     --weight_decay 0. \
     --warmup_ratio 0.03 \
     --lr_scheduler_type "cosine" \
@@ -93,7 +97,7 @@ ACCELERATE_CPU_AFFINITY=1 torchrun --nproc_per_node="${NUM_GPUS}" --master_port=
     --report_to tensorboard \
     --torch_compile True \
     --torch_compile_backend "inductor" \
-    --dataloader_drop_last True
+    --dataloader_drop_last True \
     # --attn_implementation sdpa
 
 # You can delete the sdpa attn_implementation if you want to use flash attn

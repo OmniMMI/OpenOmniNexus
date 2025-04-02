@@ -90,7 +90,8 @@ class Conversation:
                 if message:
                     if type(message) is tuple:
                         message, images = message
-                        message = "<image>" * len(images) + message
+                        # if "<image>" not in message:
+                        #     message = "<image>" * len(images) + message
                     ret += role + "\n" + message + self.sep + "\n"
                 else:
                     ret += role + "\n"
@@ -104,7 +105,8 @@ class Conversation:
                 if message:
                     if type(message) is tuple:
                         message, images = message
-                        message = "<image>" * len(images) + message
+                        # if "<image>" not in message:
+                        #     message = "<image>" * len(images) + message
                     chat_template_messages.append({"role": role, "content": message})
 
             # print(chat_template_messages)
@@ -358,28 +360,28 @@ conv_llava_llama_2 = Conversation(
 )
 
 # # This will lead to a bug when user can not access Meta-Llama-3-8B-Instruct
-# def safe_load_tokenizer(tokenizer_id):
-#     print("*"*20)
-#     import os
-#     print(os.getcwd())
-#     print("*"*20)
-#     try:
-#         return AutoTokenizer.from_pretrained(tokenizer_id)
-#     except Exception as e:
-#         print(f"Encounter Error: {e}")
-#         return None
-# conv_llava_llama_3 = Conversation(
-#     system="You are a helpful language and vision assistant. " "You are able to understand the visual content that the user provides, " "and assist the user with a variety of tasks using natural language.",
-#     roles=("user", "assistant"),
-#     version="llama_v3",
-#     messages=[],
-#     offset=0,
-#     sep="<|eot_id|>",
-#     sep_style=SeparatorStyle.LLAMA_3,
-#     tokenizer_id="meta-llama/Meta-Llama-3-8B-Instruct",
-#     tokenizer=safe_load_tokenizer("checkpoints/Meta-Llama-3.1-8B-Instruct"),
-#     stop_token_ids=[128009],
-# )
+def safe_load_tokenizer(tokenizer_id):
+    print("*"*20)
+    import os
+    print(os.getcwd())
+    print("*"*20)
+    try:
+        return AutoTokenizer.from_pretrained(tokenizer_id)
+    except Exception as e:
+        print(f"Encounter Error: {e}")
+        return None
+conv_llava_llama_3 = Conversation(
+    system="You are a helpful language and vision assistant. " "You are able to understand the visual content that the user provides, " "and assist the user with a variety of tasks using natural language.",
+    roles=("user", "assistant"),
+    version="llama_v3",
+    messages=[],
+    offset=0,
+    sep="<|eot_id|>",
+    sep_style=SeparatorStyle.LLAMA_3,
+    tokenizer_id="checkpoints/Llama-3.1-8B-S2S-Omni",
+    tokenizer=safe_load_tokenizer("checkpoints/Llama-3.1-8B-S2S-Omni"),
+    stop_token_ids=[128009],
+)
 
 conv_mistral_instruct = Conversation(
     system="",
@@ -555,7 +557,7 @@ conv_templates = {
     "llava_v1": conv_llava_v1,
     "llava_v1_mmtag": conv_llava_v1_mmtag,
     "llava_llama_2": conv_llava_llama_2,
-    # "llava_llama_3": conv_llava_llama_3,
+    "llava_llama_3": conv_llava_llama_3,
     "llava_llama_2_simple": conv_llava_llama_2_simple,
     "llava_llama_2_mmtag": conv_llava_llama_2_mmtag,
     "llava_mistral_instruct": conv_mistral_instruct,

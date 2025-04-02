@@ -548,7 +548,7 @@ class GenerationWithCTC(GenerationMixin):
             
             # speechgen
             hidden_states = torch.cat([decoder_hidden_states[0][-1][:, -1:, :]] + [decoder_hidden_states[i][-1] for i in range(1, len(decoder_hidden_states))], dim=1)
-            ctc_pred = self.speech_generator.predict(hidden_states.squeeze(0))
+            ctc_pred = self.model.speech_generator.predict(hidden_states.squeeze(0))
             cur_units = ctc_postprocess(ctc_pred, blank=self.model.config.unit_vocab_size)
             
             # finished sentences should have their next token be a padding token
