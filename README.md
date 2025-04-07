@@ -15,7 +15,7 @@
     </a> -->
     <br>
     <br>
-    <img src="assets/open_omni.png" alt="Open Omni" width="400" height="auto">
+    <img src="assets/open_omni.png" alt="Open Omni" width="1000" height="auto">
 
 </p>
 
